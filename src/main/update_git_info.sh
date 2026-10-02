@@ -4,20 +4,18 @@ GIT_COMMAND="git"
 GIT_INFO_FILE="git_info.h"
 GIT_INFO_TEMPLATE_FILE="git_info.template"
 
-SCRIPT_PATH=$(dirname $0)
-SCRIPT_NAME=$(basename $0)
+SCRIPT_PATH=$(dirname "$0")
+SCRIPT_NAME=$(basename "$0")
 
 [ ! -z "${SCRIPT_PATH}" ] && cd "${SCRIPT_PATH}"
-
-# Test git command is available
-"${GIT_COMMAND}" --version >/dev/null 2>&1
 
 GENERATE=0
 
 GIT_VERSION=
 GIT_VERSION_EXTRA=
 
-if [ $? -eq 0 ]
+# Test git command is available
+if "${GIT_COMMAND}" --version >/dev/null 2>&1
 then
 	# Retrive git information for current branch
 	GIT_VERSION=$("${GIT_COMMAND}" describe --tags --always 2>/dev/null)
