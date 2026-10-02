@@ -123,7 +123,7 @@ namespace pvd
 
 	bool RtmpStream::Stop()
 	{
-		if (GetState() == Stream::State::STOPPED)
+		if ((GetState() == Stream::State::STOPPED) || (GetState() == Stream::State::TERMINATED))
 		{
 			return true;
 		}
