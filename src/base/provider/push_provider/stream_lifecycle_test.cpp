@@ -182,6 +182,14 @@ namespace
 
 		std::atomic<int> _close_transport_count = 0;
 
+		bool Stop() override
+		{
+			_stop_count++;
+			return PushStream::Stop();
+		}
+
+		std::atomic<int> _stop_count = 0;
+
 		bool OnDataReceived(const std::shared_ptr<const ov::Data> &data) override
 		{
 			// Which call this is, so an immutable handler can tell them apart.
@@ -891,7 +899,7 @@ TEST(PushStreamLifecycle, CountingStateChangesLeavesTheOnDataReceivedCountAlone)
 	EXPECT_TRUE(f.channel->TryBeginReaping(state));
 }
 
-TEST(PushStreamLifecycle, DeletingAChannelThatNeverJoinedAnApplicationClosesItsTransport)
+TEST(PushStreamLifecycle, DeletingAChannelThatNeverJoinedAnApplicationStopsItAndClosesItsTransport)
 {
 	Fixture f;
 
@@ -899,10 +907,9 @@ TEST(PushStreamLifecycle, DeletingAChannelThatNeverJoinedAnApplicationClosesItsT
 
 	EXPECT_TRUE(f.provider->OnChannelDeleted(f.channel));
 
-	// Nothing else tears the transport down on this path:
-	// `Application::DeleteStream()` never runs, so neither does `Stream::Stop()`,
-	// and the physical port owns the socket rather than the stream.
-	// Without this the client keeps a connection it believes is still streaming.
+	// `Application::DeleteStream()` never runs on this path, so nothing else stops the channel
+	// or ends the client's connection.
+	EXPECT_EQ(f.channel->_stop_count.load(), 1);
 	EXPECT_EQ(f.channel->_close_transport_count.load(), 1);
 }
 
@@ -924,6 +931,7 @@ TEST(PushStreamLifecycle, DeletingAJoinedChannelLeavesItsTransportToTheApplicati
 	// The application's own teardown reaches `Stream::Stop()`, which closes the transport with the rest
 	// of it. Closing it here as well would be a double teardown.
 	EXPECT_EQ(f.channel->_close_transport_count.load(), 0);
+	EXPECT_EQ(f.channel->_stop_count.load(), 0);
 
 	auto stub = std::dynamic_pointer_cast<StubPushApplication>(application);
 	ASSERT_NE(stub, nullptr);

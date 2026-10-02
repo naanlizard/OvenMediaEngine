@@ -192,8 +192,9 @@ namespace pvd
 		}
 		else
 		{
-			// The channel never joined an application.
-			// `Application::DeleteStream()` did not run, so nothing tells the client it stopped.
+			// The channel never joined an application, so `Application::DeleteStream()` will not stop it.
+			// The RTMP streams' `Stop()` also sends the closing admission webhook once admission passed.
+			channel->Stop();
 			channel->CloseTransport();
 		}
 
