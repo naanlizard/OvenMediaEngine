@@ -292,13 +292,16 @@ bool RtcSession::RequestChangeRendition(const ov::String &rendition_name)
 		return false;
 	}
 
-	if (rendition == GetCurrentRendition())
+	std::unique_lock<std::shared_mutex> lock(_change_rendition_lock);
+
+	if (rendition == _current_rendition)
 	{
+		_next_rendition = nullptr;
 		logtt("The rendition (%s) is already selected", rendition_name.CStr());
 		return true;
 	}
 
-	SetNextRendition(rendition);
+	_next_rendition = rendition;
 
 	return true;
 }
@@ -481,6 +484,7 @@ void RtcSession::ChangeRendition()
 
 	if (_next_rendition == _current_rendition)
 	{
+		_next_rendition = nullptr;
 		logtt("The rendition is already selected");
 		return;
 	}

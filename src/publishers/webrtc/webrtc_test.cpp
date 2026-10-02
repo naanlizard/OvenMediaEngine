@@ -7,9 +7,27 @@
 //==============================================================================
 #include <gtest/gtest.h>
 
+#include <base/info/application.h>
 #include <base/info/media_track.h>
+#include <base/publisher/session.h>
+#include <base/publisher/stream.h>
+#include <modules/dtls_srtp/dtls_transport.h>
+#include <modules/http/server/web_socket/web_socket_session.h>
+#include <modules/ice/ice_port.h>
+#include <modules/rtp_rtcp/rtp_packetizer_interface.h>
+#include <modules/rtp_rtcp/rtp_rtcp.h>
+#include <modules/sdp/session_description.h>
+#include <monitoring/monitoring.h>
 
+#include <unordered_set>
+
+#include "rtc_bandwidth_estimator.h"
 #include "rtc_playlist.h"
+
+// Every header rtc_session.h includes is already included above, so only RtcSession is opened up.
+#define private public
+#include "rtc_session.h"
+#undef private
 
 namespace
 {
@@ -38,6 +56,36 @@ namespace
 	bool HasRendition(const std::shared_ptr<const RtcPlaylist> &pl, const char *name)
 	{
 		return (pl != nullptr) && (pl->GetRendition(name) != nullptr);
+	}
+
+	class TestApplicationInfo : public info::Application
+	{
+	public:
+		using info::Application::GetInvalidApplication;
+	};
+
+	class TestStream : public pub::Stream
+	{
+	public:
+		TestStream()
+			: pub::Stream(nullptr, info::Stream(TestApplicationInfo::GetInvalidApplication(), StreamSourceType::Ovt))
+		{
+		}
+
+		void SendVideoFrame(const std::shared_ptr<MediaPacket> &) override {}
+		void SendAudioFrame(const std::shared_ptr<MediaPacket> &) override {}
+		void SendDataFrame(const std::shared_ptr<MediaPacket> &) override {}
+	};
+
+	std::shared_ptr<RtcSession> MakeSession(const std::shared_ptr<const RtcPlaylist> &playlist)
+	{
+		auto stream = std::make_shared<TestStream>();
+		auto session = std::make_shared<RtcSession>(info::Session(*stream, 1), nullptr, nullptr, stream, "test",
+													std::make_shared<SessionDescription>(SessionDescription::SdpType::Offer),
+													std::make_shared<SessionDescription>(SessionDescription::SdpType::Answer),
+													nullptr, 0, nullptr);
+		session->_playlist = playlist;
+		return session;
 	}
 }  // namespace
 
@@ -256,4 +304,61 @@ TEST(RtcMasterPlaylist, AudioOnlyFallbackDisabledNoCrossAdd)
 	EXPECT_FALSE(HasRendition(master.GetPlaylist(MediaCodecId::H264, MediaCodecId::Opus), "audio"));
 	// ...but still available in its own audio-only playlist
 	EXPECT_TRUE(HasRendition(master.GetPlaylist(MediaCodecId::None, MediaCodecId::Opus), "audio"));
+}
+
+// A video switch requested from audio-only waits for a keyframe; requesting audio-only
+// again before it arrives must cancel that switch.
+TEST(RtcSession, RequestForCurrentRenditionCancelsPendingSwitch)
+{
+	RtcMasterPlaylist master("m", "m");
+	master.SetWebRtcAudioOnlyFallback(true);
+	master.AddRendition(MakeRendition("video", MediaCodecId::H264, 2000000, MediaCodecId::Opus, 128000));
+	master.AddRendition(MakeRendition("audio", MediaCodecId::None, 0, MediaCodecId::Opus, 48000));
+
+	auto vpl = master.GetPlaylist(MediaCodecId::H264, MediaCodecId::Opus);
+	ASSERT_NE(vpl, nullptr);
+	auto video = vpl->GetRendition("video");
+	auto audio = vpl->GetRendition("audio");
+	ASSERT_NE(video, nullptr);
+	ASSERT_NE(audio, nullptr);
+
+	auto session = MakeSession(vpl);
+	session->_current_rendition = audio;
+
+	EXPECT_TRUE(session->RequestChangeRendition("video"));
+	EXPECT_EQ(session->GetNextRendition(), video);
+
+	EXPECT_TRUE(session->RequestChangeRendition("audio"));
+	EXPECT_EQ(session->GetCurrentRendition(), audio);
+	EXPECT_EQ(session->GetNextRendition(), nullptr);
+}
+
+// A pending rendition equal to the current one, as left by a request that raced a switch.
+TEST(RtcSession, PendingRenditionEqualToCurrentIsClearedAndAbrResumes)
+{
+	RtcMasterPlaylist master("m", "m");
+	master.AddRendition(MakeRendition("high", MediaCodecId::H264, 2000000, MediaCodecId::Opus, 128000));
+	master.AddRendition(MakeRendition("low", MediaCodecId::H264, 300000, MediaCodecId::Opus, 128000));
+
+	auto vpl = master.GetPlaylist(MediaCodecId::H264, MediaCodecId::Opus);
+	ASSERT_NE(vpl, nullptr);
+	auto high = vpl->GetRendition("high");
+	auto low = vpl->GetRendition("low");
+	ASSERT_NE(high, nullptr);
+	ASSERT_NE(low, nullptr);
+
+	auto session = MakeSession(vpl);
+	session->_current_rendition = low;
+	session->SetNextRendition(low);
+
+	session->ChangeRendition();
+
+	EXPECT_EQ(session->GetCurrentRendition(), low);
+	EXPECT_EQ(session->GetNextRendition(), nullptr);
+
+	auto signal = std::make_shared<RtcBandwidthEstimatorSignal>();
+	signal->SetState(RtcBandwidthEstimatorSignal::State::UnderUse);
+	session->OnSignal(signal);
+
+	EXPECT_EQ(session->GetNextRendition(), high);
 }
