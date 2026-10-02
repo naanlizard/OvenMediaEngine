@@ -77,6 +77,7 @@ namespace
 		// Concrete providers reach these from their own socket callbacks, where they are protected.
 		using PushProvider::OnChannelCreated;
 		using PushProvider::OnDataReceived;
+		using PushProvider::GetChannel;
 		// The orchestrator calls this one.
 		using PushProvider::OnCreateApplication;
 		// `ChannelTaskRunner()` and the socket callbacks call this one.
@@ -361,6 +362,29 @@ TEST(PushStreamLifecycle, DataForAnUnknownChannelIsRejected)
 
 	EXPECT_FALSE(f.provider->OnDataReceived(Fixture::CHANNEL_ID + 1, f.MakeData()));
 	EXPECT_FALSE(f.channel->_handler_ran);
+}
+
+TEST(PushStreamLifecycle, AChannelIdThatIsStillRegisteredIsRejected)
+{
+	Fixture f;
+
+	auto second = std::make_shared<StubPushStream>(Fixture::CHANNEL_ID, f.provider);
+
+	EXPECT_FALSE(f.provider->OnChannelCreated(Fixture::CHANNEL_ID, second));
+	EXPECT_EQ(f.provider->GetChannel(Fixture::CHANNEL_ID).get(), f.channel.get());
+}
+
+TEST(PushStreamLifecycle, DeletingAChannelAgainLeavesALaterChannelWithItsIdRegistered)
+{
+	Fixture f;
+
+	ASSERT_TRUE(f.provider->OnChannelDeleted(f.channel));
+
+	auto later = std::make_shared<StubPushStream>(Fixture::CHANNEL_ID, f.provider);
+	ASSERT_TRUE(f.provider->OnChannelCreated(Fixture::CHANNEL_ID, later));
+
+	EXPECT_FALSE(f.provider->OnChannelDeleted(f.channel));
+	EXPECT_EQ(f.provider->GetChannel(Fixture::CHANNEL_ID).get(), later.get());
 }
 
 TEST(PushStreamLifecycle, TheMarkIsSetOnlyWhileOnDataReceivedRuns)

@@ -115,7 +115,11 @@ namespace pvd
 		// so a write here would discard it.
 		std::lock_guard<std::shared_mutex> lock(_channels_lock);
 
-		_channels.emplace(channel_id, channel);
+		if (_channels.emplace(channel_id, channel).second == false)
+		{
+			logte("Channel %u already exists, rejecting the new channel", channel_id);
+			return false;
+		}
 
 		return true;
 	}
@@ -161,12 +165,15 @@ namespace pvd
 		// Delete from stream_mold
 		std::unique_lock<std::shared_mutex> lock(_channels_lock);
 		
-		if(_channels.erase(channel->GetChannelId()) == 0)
+		auto it = _channels.find(channel->GetChannelId());
+		if ((it == _channels.end()) || (it->second != channel))
 		{
 			// probabliy, it was removed 
 			logte("%d channel to be deleted cannot be found", channel->GetChannelId());
 			return false;
 		}
+
+		_channels.erase(it);
 
 		lock.unlock();
 

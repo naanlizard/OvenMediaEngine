@@ -313,7 +313,17 @@ namespace pvd
 		stream->SetRequestedUrl(requested_url);
 		stream->SetFinalUrl(final_url);
 
-		PushProvider::OnChannelCreated(remote->GetNativeHandle(), stream);
+		if (PushProvider::OnChannelCreated(remote->GetNativeHandle(), stream) == false)
+		{
+			// Admission already passed, and OnDisconnected() will not find this connection's channel
+			if (webhooks_result == AccessController::VerificationResult::Pass)
+			{
+				SendCloseAdmissionWebhooks(host_info, std::make_shared<ac::RequestInfo>(requested_url, final_url, remote, nullptr));
+			}
+
+			remote->Close();
+			return;
+		}
 
 		// The application is already known at channel creation,
 		// so honor its configured `PacketSilenceTimeoutMs` for the pre-publish window.
@@ -347,6 +357,15 @@ namespace pvd
 			return;
 		}
 
+		// The id is a socket id, so the channel found here can belong to another connection
+		// when this socket's own channel was refused.
+		auto stream = std::dynamic_pointer_cast<MpegTsStream>(channel);
+		if ((stream == nullptr) || (stream->GetClientSock() != remote))
+		{
+			logtt("Channel %u belongs to another connection (remote : %s)", channel->GetChannelId(), remote->ToString().CStr());
+			return;
+		}
+
 		// Send Close to Admission Webhooks
 		auto requested_url = channel->GetRequestedUrl();
 		auto final_url = channel->GetFinalUrl();
@@ -370,6 +389,6 @@ namespace pvd
 
 		logti("The SRT client has disconnected: [%s/%s], remote: %s", channel->GetApplicationName(), channel->GetName().CStr(), remote->ToString().CStr());
 
-		PushProvider::OnChannelDeleted(remote->GetNativeHandle());
+		PushProvider::OnChannelDeleted(channel);
 	}
 }  // namespace pvd

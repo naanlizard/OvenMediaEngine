@@ -218,6 +218,13 @@ namespace pvd
 		return T::Create(StreamSourceType::Rtmp, channel_id, remote, provider);
 	}
 
+	template <typename T>
+	bool IsChannelOf(const std::shared_ptr<pvd::PushStream> &channel, const std::shared_ptr<ov::Socket> &remote)
+	{
+		auto stream = std::dynamic_pointer_cast<T>(channel);
+		return (stream != nullptr) && (stream->GetClientSock() == remote);
+	}
+
 	void RtmpProvider::OnConnected(const std::shared_ptr<ov::Socket> &remote)
 	{
 		auto channel_id = remote->GetNativeHandle();
@@ -228,7 +235,10 @@ namespace pvd
 		logti("A RTMP client has connected from %s%s", remote->ToString().CStr(),
 			  _is_ertmp_enabled ? " (E-RTMP)" : "");
 
-		PushProvider::OnChannelCreated(channel_id, stream);
+		if (PushProvider::OnChannelCreated(channel_id, stream) == false)
+		{
+			remote->Close();
+		}
 	}
 
 	void RtmpProvider::OnDataReceived(const std::shared_ptr<ov::Socket> &remote,
@@ -266,10 +276,18 @@ namespace pvd
 			return;
 		}
 
+		// The id is a descriptor, so the channel found here can belong to a later connection,
+		// or to an earlier one when this socket's own channel was refused.
+		if ((IsChannelOf<RtmpStream>(channel, remote) || IsChannelOf<rtmp::RtmpStreamV2>(channel, remote)) == false)
+		{
+			logtd("Channel %u belongs to another connection (remote : %s)", channel->GetChannelId(), remote->ToString().CStr());
+			return;
+		}
+
 		logti("The RTMP client has disconnected: [%s], remote: %s",
 			  channel->GetNamePath().CStr(),
 			  remote->ToString().CStr());
 
-		PushProvider::OnChannelDeleted(remote->GetNativeHandle());
+		PushProvider::OnChannelDeleted(channel);
 	}
 }  // namespace pvd
