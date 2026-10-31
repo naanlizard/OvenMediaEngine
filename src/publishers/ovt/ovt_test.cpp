@@ -509,6 +509,25 @@ TEST(OvtDescribeTest, AnEmptiedSideNamesTheVariantItLost)
 	}
 }
 
+TEST(OvtDescribeTest, ARenditionThatLostASideLosesItsScore)
+{
+	auto contents	 = BuildTrackSetFixture();
+	auto &renditions = contents["stream"]["playlists"][0]["renditions"];
+	renditions[0]["score"] = 100.0;
+	renditions[1]["score"] = 50.0;
+	renditions[2]["score"] = 0.001;
+
+	// Drops the 360p video only
+	OvtStream::RebuildRenditions(contents["stream"], {0, 2, 3});
+
+	const auto &rebuilt = contents["stream"]["playlists"][0]["renditions"];
+	ASSERT_EQ(rebuilt.size(), 2u);
+	EXPECT_STREQ(rebuilt[0]["name"].asCString(), "720p_ko");
+	EXPECT_DOUBLE_EQ(rebuilt[0]["score"].asDouble(), 100.0);
+	EXPECT_STREQ(rebuilt[1]["name"].asCString(), "360p_en");
+	EXPECT_FALSE(rebuilt[1].isMember("score"));
+}
+
 TEST(OvtDescribeTest, RenumbersHintsForFilteredDescribe)
 {
 	auto contents = BuildTrackSetFixture();

@@ -142,9 +142,10 @@ ov::String LLHlsMasterPlaylist::GetTrackCodecs(const std::shared_ptr<const Media
 	return track->GetCodecsParameter();
 }
 
-bool LLHlsMasterPlaylist::AddStreamInfo(const ov::String &video_group_id, int video_index_hint, const ov::String &audio_group_id, const ov::String &subtitle_group_id)
+bool LLHlsMasterPlaylist::AddStreamInfo(const ov::String &video_group_id, int video_index_hint, const ov::String &audio_group_id, const ov::String &subtitle_group_id, double score)
 {
 	auto new_stream_info = std::make_shared<StreamInfo>();
+	new_stream_info->_score = score;
 
 	// Video/Audio or Video Only
 	if (video_group_id.IsEmpty() == false)
@@ -433,6 +434,27 @@ ov::String LLHlsMasterPlaylist::MakePlaylist(const ov::String &chunk_query_strin
 	// Write EXT-X-STREAM-INF from _stream_infos
 	// shared lock
 	std::shared_lock<std::shared_mutex> stream_infos_lock(_stream_infos_guard);
+
+	// HLS SCORE is all-or-nothing (RFC 8216bis 4.4.6.2): emit it only when every
+	// variant carries a score, otherwise omit it everywhere and warn.
+	bool all_scored = _stream_infos.empty() == false;
+	bool any_scored = false;
+	for (const auto &stream_info : _stream_infos)
+	{
+		if (stream_info->_score >= 0)
+		{
+			any_scored = true;
+		}
+		else
+		{
+			all_scored = false;
+		}
+	}
+	if (any_scored && all_scored == false)
+	{
+		logtw("SCORE set on some but not all renditions; omitting SCORE from the master playlist (HLS requires all-or-nothing)");
+	}
+
 	for (const auto &stream_info : _stream_infos)
 	{
 		playlist.AppendFormat("#EXT-X-STREAM-INF:");
@@ -453,6 +475,12 @@ ov::String LLHlsMasterPlaylist::MakePlaylist(const ov::String &chunk_query_strin
 
 		// CODECS
 		playlist.AppendFormat(",CODECS=\"%s\"", stream_info->_codecs.CStr());
+
+		// Fixed-point, never exponent form, which the decimal-floating-point grammar disallows
+		if (all_scored)
+		{
+			playlist.AppendFormat(",SCORE=%.3f", stream_info->_score);
+		}
 
 		if (stream_info->_video_group_id.IsEmpty() == false)
 		{

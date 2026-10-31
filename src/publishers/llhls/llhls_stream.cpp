@@ -827,7 +827,10 @@ std::shared_ptr<LLHlsMasterPlaylist> LLHlsStream::CreateMasterPlaylist(const std
 			logtw("LLHlsStream(%s/%s) - %s audio is excluded from the %s rendition in %s playlist because there is no audio track.", GetApplication()->GetVHostAppName().CStr(), GetName().CStr(), rendition->GetAudioVariantName().CStr(), rendition->GetName().CStr(), playlist->GetFileName().CStr());
 		}
 
-		master_playlist->AddStreamInfo(video_variant_name, video_index_hint, audio_variant_name, vtt_variant_name);
+		// The score ranked the rendition with every configured track
+		bool incomplete = (rendition->GetVideoVariantName().IsEmpty() == false && video_track == nullptr) ||
+						  (rendition->GetAudioVariantName().IsEmpty() == false && audio_track == nullptr);
+		master_playlist->AddStreamInfo(video_variant_name, video_index_hint, audio_variant_name, vtt_variant_name, incomplete ? -1.0 : rendition->GetScore());
 	}
 
 	master_playlist->UpdateCacheForDefaultPlaylist();

@@ -125,6 +125,31 @@ What happens after a session ends depends on whether access control is enabled f
 * With [SignedPolicy](../access-control/signedpolicy.md) or [AdmissionWebhooks](../access-control/admission-webhooks.md), the player must request the master playlist again to play. Chunklist and segment requests that still carry the ended session are rejected with `401 Unauthorized`. Most players do not go back to the master playlist on their own, so a player whose connections were all closed for longer than that, for example after a network outage, stays stopped until your player page loads the stream again. Starting again goes through access control as a new request.
 * Without access control, the chunklist and segment URLs the player already has start a new session, so playback continues after a break of any length while the stream exists.
 
+## Deprioritizing a rung with `SCORE`
+
+A `<Rendition>` or `<RenditionTemplate>` accepts an optional `<Score>`, which OvenMediaEngine writes with three decimals as the `SCORE` attribute of the variant's `#EXT-X-STREAM-INF` (RFC 8216bis 4.4.6.2). A player that supports it chooses among the variants it can play by score, highest first. A web page cannot pick the level of a native HLS player, so a score is how the playlist steers one. For example, to keep automatic selection off an audio-only rendition, give it the lowest score:
+
+```xml
+<Rendition>
+    <Name>source</Name>
+    <Video>bypass_video</Video>
+    <Audio>bypass_audio</Audio>
+    <Score>100</Score>
+</Rendition>
+<Rendition>
+    <Name>audio</Name>
+    <Audio>bypass_audio</Audio>
+    <Score>0.001</Score>
+</Rendition>
+```
+
+Notes:
+
+- A score must be positive and at least 0.001 at three decimals, or the configuration fails to load.
+- The spec has players use `SCORE` when every variant has one, so OvenMediaEngine writes it only when every rendition of the playlist has a score. When only some have one, it leaves `SCORE` out of the whole playlist and logs a warning.
+- A rendition that is missing one of its configured tracks counts as unscored: the input lacks the track, an OVT track filter removed it, or one side of a `<RenditionTemplate>` matched no track.
+- A score is a preference: a player can still choose the lowest-scored rung when bandwidth runs short. Players that do not support `SCORE` ignore it.
+
 ## Live Rewind
 
 You can create as long a playlist as you want by setting `<DVR>` to the LLHLS publisher as shown below. This allows the player to rewind the live stream and play older segments. OvenMediaEngine stores and uses old segments in a file in `<DVR>/<TempStoragePath>` to prevent excessive memory usage. It stores as much as `<DVR>/<MaxDuration>` and the unit is seconds.

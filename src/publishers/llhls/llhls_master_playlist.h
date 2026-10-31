@@ -56,7 +56,7 @@ public:
 
 	bool AddMediaCandidateGroup(const std::shared_ptr<const MediaTrackGroup> &track_group, std::function<ov::String(const std::shared_ptr<const MediaTrack> &track)> chunk_uri_generator);
 	bool AddMediaCandidate(const LLHlsMasterPlaylist::MediaInfo &media_info);
-	bool AddStreamInfo(const ov::String &video_group_id, int video_index_hint, const ov::String &audio_group_id, const ov::String &subtitle_group_id);
+	bool AddStreamInfo(const ov::String &video_group_id, int video_index_hint, const ov::String &audio_group_id, const ov::String &subtitle_group_id, double score = -1.0);
 
 	// Codecs the CODECS attribute advertises for a track. A runtime configuration
 	// change can leave segments of several codecs in the window, so this can list
@@ -101,6 +101,7 @@ private:
 		uint32_t _height = 0;
 		double _framerate = 0.0;
 		ov::String _codecs;
+		double _score = -1.0;
 
 		std::shared_ptr<const MediaInfo> _media_info; // Required
 	};

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "base/common_types.h"
+#include <cmath>
 
 #include <optional>
 
@@ -85,6 +86,23 @@ namespace info
 			return _audio_track_id;
 		}
 
+		// Negative means unset
+		void SetScore(double score)
+		{
+			_score = score;
+		}
+
+		double GetScore() const
+		{
+			return _score;
+		}
+
+		// SCORE is written with three decimals and must be positive
+		static bool IsValidScore(double score)
+		{
+			return std::isfinite(score) && (score >= 0.0005);
+		}
+
 		// equals operator
 		bool operator==(const Rendition &rhs) const
 		{
@@ -125,6 +143,7 @@ namespace info
 		int _audio_index_hint = -1;
 		std::optional<uint32_t> _video_track_id;
 		std::optional<uint32_t> _audio_track_id;
+		double _score = -1.0;
 	};
 
 	class Playlist

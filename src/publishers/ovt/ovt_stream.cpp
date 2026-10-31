@@ -236,6 +236,7 @@ Json::Value OvtStream::BuildDescription(const ov::String &app_name, const ov::St
 			json_rendition["videoIndexHint"] = rendition->GetVideoIndexHint();
 			json_rendition["audioTrackName"] = rendition->GetAudioVariantName().CStr();
 			json_rendition["audioIndexHint"] = rendition->GetAudioIndexHint();
+			json_rendition["score"]			 = rendition->GetScore();
 			// OVT2 track references. An OVT1 edge reads the index hints instead and ignores these.
 			if (rendition->GetVideoTrackId().has_value())
 			{
@@ -584,6 +585,12 @@ size_t OvtStream::RebuildRenditions(Json::Value &stream, const std::set<uint32_t
 
 			rebuild_side("videoTrackName", "videoIndexHint", "videoTrackId", "removedVideoTrackName");
 			rebuild_side("audioTrackName", "audioIndexHint", "audioTrackId", "removedAudioTrackName");
+
+			// The score ranked the rendition with both sides
+			if (rendition.isMember("removedVideoTrackName") || rendition.isMember("removedAudioTrackName"))
+			{
+				rendition.removeMember("score");
+			}
 
 			if (ov::String(rendition["videoTrackName"].asCString()).IsEmpty() && ov::String(rendition["audioTrackName"].asCString()).IsEmpty())
 			{

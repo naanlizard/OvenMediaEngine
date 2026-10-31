@@ -8,6 +8,8 @@
 //==============================================================================
 #pragma once
 
+#include <base/info/playlist.h>
+
 #include "../encodes/audio_profile.h"
 #include "../encodes/video_profile.h"
 
@@ -33,6 +35,8 @@ namespace cfg
 					int _video_index_hint = -1;
 					int _audio_index_hint = -1;
 
+					double _score = -1.0;
+
 				public:
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetName, _name);
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetVideoName, _video_name);
@@ -43,6 +47,7 @@ namespace cfg
 					CFG_DECLARE_CONST_REF_GETTER_OF(IsAudioEnabled, _audio_enabled);
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetVideoIndexHint, _video_index_hint);
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetAudioIndexHint, _audio_index_hint);
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetScore, _score);
 
 					void SetVideoProfile(const VideoProfile &profile)
 					{
@@ -56,6 +61,16 @@ namespace cfg
 						_audio_enabled = true;
 					}
 
+					static std::shared_ptr<ConfigError> ValidateScore(double score)
+					{
+						if (info::Rendition::IsValidScore(score) == false)
+						{
+							return CreateConfigErrorPtr("Score must be a finite number that rounds to at least 0.001 at three decimals: %f", score);
+						}
+
+						return nullptr;
+					}
+
 				protected:
 					void MakeList() override
 					{
@@ -64,6 +79,10 @@ namespace cfg
 						Register<Optional>({"Audio", "audio"}, &_audio_name);
 						Register<Optional>({"VideoIndexHint", "video_index_hint"}, &_video_index_hint);
 						Register<Optional>({"AudioIndexHint", "audio_index_hint"}, &_audio_index_hint);
+						Register<Optional>({"Score", "score"}, &_score, nullptr,
+										   [=]() -> std::shared_ptr<ConfigError> {
+											   return ValidateScore(_score);
+										   });
 					}
 				};
 			}  // namespace oprf

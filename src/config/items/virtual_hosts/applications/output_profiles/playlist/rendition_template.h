@@ -9,6 +9,7 @@
 #pragma once
 
 #include "audio_template.h"
+#include "rendition.h"
 #include "video_template.h"
 
 /*
@@ -55,10 +56,13 @@ namespace cfg
 					AudioTemplate _audio_template;
 					VideoTemplate _video_template;
 
+					double _score = -1.0;
+
 				public:
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetName, _name);
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetAudioTemplate, _audio_template);
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetVideoTemplate, _video_template);
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetScore, _score);
 
 				protected:
 					void MakeList() override
@@ -66,6 +70,10 @@ namespace cfg
 						Register({"Name", "name"}, &_name);
 						Register<Optional>({"VideoTemplate", "video_template"}, &_video_template);
 						Register<Optional>({"AudioTemplate", "audio_template"}, &_audio_template);
+						Register<Optional>({"Score", "score"}, &_score, nullptr,
+										   [=]() -> std::shared_ptr<ConfigError> {
+											   return Rendition::ValidateScore(_score);
+										   });
 					}
 				};
 			}  // namespace oprf

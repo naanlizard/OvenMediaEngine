@@ -54,6 +54,7 @@ namespace cfg
 							auto rendition_info = std::make_shared<info::Rendition>(rendition.GetName(), rendition.GetVideoName(), rendition.GetAudioName());
 							rendition_info->SetVideoIndexHint(rendition.GetVideoIndexHint());
 							rendition_info->SetAudioIndexHint(rendition.GetAudioIndexHint());
+							rendition_info->SetScore(rendition.GetScore());
 
 							playlist->AddRendition(rendition_info);
 						}

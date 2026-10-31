@@ -950,6 +950,11 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 					continue;
 				}
 
+				// The score ranked a rendition with every side the template configures
+				bool complete = (has_video_template == false || matched_video_tracks.empty() == false) &&
+								(has_audio_template == false || matched_audio_tracks.empty() == false);
+				double score  = complete ? rendition_template.GetScore() : -1.0;
+
 				if (matched_video_tracks.empty() == false && matched_audio_tracks.empty() == false)
 				{
 					for (const auto &video_track : matched_video_tracks)
@@ -960,6 +965,7 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 							ov::String rendition_name = MakeRenditionName(rendition_template.GetName(), playlist_info, video_track, audio_track);
 
 							auto rendition			  = std::make_shared<info::Rendition>(rendition_name, video_track->GetVariantName(), audio_track->GetVariantName());
+							rendition->SetScore(score);
 							rendition->SetVideoIndexHint(video_track->GetGroupIndex());
 							rendition->SetAudioIndexHint(audio_track->GetGroupIndex());
 
@@ -976,6 +982,7 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 						// Make Rendition Name
 						ov::String rendition_name = MakeRenditionName(rendition_template.GetName(), playlist_info, video_track, nullptr);
 						auto rendition			  = std::make_shared<info::Rendition>(rendition_name, video_track->GetVariantName(), "");
+						rendition->SetScore(score);
 						rendition->SetVideoIndexHint(video_track->GetGroupIndex());
 
 						playlist_info->AddRendition(rendition);
@@ -991,6 +998,7 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 						ov::String rendition_name = MakeRenditionName(rendition_template.GetName(), playlist_info, nullptr, audio_track);
 
 						auto rendition			  = std::make_shared<info::Rendition>(rendition_name, "", audio_track->GetVariantName());
+						rendition->SetScore(score);
 						rendition->SetAudioIndexHint(audio_track->GetGroupIndex());
 
 						playlist_info->AddRendition(rendition);

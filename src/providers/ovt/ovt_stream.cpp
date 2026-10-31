@@ -785,6 +785,22 @@ namespace pvd
 				removed_side("removedVideoTrackName", "video");
 				removed_side("removedAudioTrackName", "audio");
 
+				// An edge skips the transcoder that reads the score from the configuration
+				if (json_rendition["score"].isNumeric())
+				{
+					auto score = json_rendition["score"].asDouble();
+					if (info::Rendition::IsValidScore(score))
+					{
+						rendition->SetScore(score);
+					}
+					else if (score >= 0.0)
+					{
+						logtw("[%s/%s(%u)] Rendition [%s] of playlist [%s] in the %s response has an invalid score (%f), ignored",
+							  GetApplicationInfo().GetVHostAppName().CStr(), GetName().CStr(), GetId(),
+							  ovt::SanitizeForLog(rendition_name).CStr(), ovt::SanitizeForLog(playlist_file_name).CStr(), source, score);
+					}
+				}
+
 				playlist->AddRendition(rendition);
 			}
 
