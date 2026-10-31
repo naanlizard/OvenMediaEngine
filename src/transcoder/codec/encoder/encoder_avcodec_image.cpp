@@ -32,7 +32,13 @@ bool AVCodecImageEncoder::SetParamsJpeg()
 	SetParamsCommon();
 
 	_codec.SetFixedQScale();
-	_codec.SetGlobalQualityFromQp(_codec.GetQMin());
+	// Unset keeps qmin
+	int jpeg_qscale = GetRefTrack()->GetQuality();
+	if (jpeg_qscale > 0 && jpeg_qscale < _codec.GetQMin())
+	{
+		_codec.SetQMin(jpeg_qscale);
+	}
+	_codec.SetGlobalQualityFromQp((jpeg_qscale > 0) ? jpeg_qscale : _codec.GetQMin());
 
 	// Set color range to JPEG
 	_codec.SetColorRange(cmn::ColorRange::Full);
@@ -54,17 +60,36 @@ bool AVCodecImageEncoder::SetParamsWebp()
 {
 	SetParamsCommon();
 
-	_codec.SetCompressionLevel(1);
-
 	auto preset = GetRefTrack()->GetPreset();
-	if (preset.IsEmpty())
+	int method	= GetRefTrack()->GetMethod();
+	bool lossless = GetRefTrack()->GetLossless();
+	if (preset.IsEmpty() && (method < 0) && (lossless == false))
 	{
-		_codec.SetOption("preset", "default");
+		preset = "default";
 	}
-	else if (preset == "none" || preset == "default" || preset == "picture" ||
-			 preset == "photo" || preset == "drawing" || preset == "icon" || preset == "text")
+
+	// libwebp's wrapper takes method and lossless from a preset, so a preset makes them moot
+	if (preset.IsEmpty() == false && preset != "none")
 	{
+		if ((method >= 0) || lossless)
+		{
+			logtw("WebP <Preset> overrides <Method> and <Lossless>; the configured values are ignored");
+		}
 		_codec.SetOption("preset", preset.CStr());
+	}
+	else
+	{
+		_codec.SetCompressionLevel((method >= 0) ? method : 1);
+		if (lossless)
+		{
+			_codec.SetOption("lossless", static_cast<int64_t>(1));
+		}
+	}
+
+	int quality = GetRefTrack()->GetQuality();
+	if (quality >= 0)
+	{
+		_codec.SetOption("quality", static_cast<int64_t>(quality));
 	}
 
 	return true;
@@ -90,10 +115,11 @@ bool AVCodecImageEncoder::SetParamsAvif()
 
 	_codec.SetThreadCount(1);
 
-	// The libaom encoder is very slow, so use the fastest preset FFmpeg allows and a reasonable
-	// CRF. bit_rate 0 selects pure constant quality (AOM_Q) over AOM_CQ.
-	_codec.SetOption("cpu-used", static_cast<int64_t>(8));
-	_codec.SetOption("crf", static_cast<int64_t>(23));
+	// The libaom encoder is very slow, so an unset <Speed> is the fastest preset. bit_rate 0
+	// selects pure constant quality (AOM_Q) over AOM_CQ.
+	int speed = GetRefTrack()->GetSpeed();
+	_codec.SetOption("cpu-used", static_cast<int64_t>((speed != -1) ? speed : 8));
+	_codec.SetOption("crf", static_cast<int64_t>(GetRefTrack()->GetQuality()));
 	_codec.SetBitrate(0);
 
 	return true;

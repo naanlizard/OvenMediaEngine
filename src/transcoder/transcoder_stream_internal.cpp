@@ -68,13 +68,29 @@ ov::String TranscoderStreamInternal::ProfileToSerialize(const uint32_t track_id,
 
 ov::String TranscoderStreamInternal::ProfileToSerialize(const uint32_t track_id, const cfg::vhost::app::oprf::ImageProfile &profile)
 {
-	return ov::String::FormatString("I=%d,O=%s:%.02f:%d:%d:%d:%s",
+	// An omitted option and one set to its sentinel value resolve differently
+	bool set = false;
+	ov::String options;
+	auto append = [&](int value) {
+		options.Append(set ? ov::String::FormatString(":%d", value).CStr() : ":-");
+	};
+	append(profile.GetQScale(&set));
+	append(profile.GetQuality(&set));
+	append(profile.GetMethod(&set));
+	append(profile.GetSpeed(&set));
+	append(profile.GetCrf(&set));
+
+	return ov::String::FormatString("I=%d,O=%s:%.02f:%d:%d:%d%s:%d:%s:%s:%s",
 									track_id,
 									profile.GetCodec().CStr(),
 									profile.GetFramerate(),
 									profile.GetSkipFrames(),
 									profile.GetWidth(),
 									profile.GetHeight(),
+									options.CStr(),
+									profile.GetLossless() ? 1 : 0,
+									profile.GetChromaSampling().CStr(),
+									profile.GetPreset().CStr(),
 									profile.GetScaleMode().LowerCaseString().CStr());
 }
 
@@ -354,6 +370,115 @@ std::shared_ptr<MediaTrack> TranscoderStreamInternal::CreateOutputTrack(const st
 	output_track->SetFrameRateByConfig(profile.GetFramerate());
 	output_track->SetSkipFramesByConfig(profile.GetSkipFrames());
 	output_track->SetScaleModeByConfig(cmn::GetVideoScaleModeByName(profile.GetScaleMode()).value_or(cmn::VideoScaleMode::Stretch));
+	bool qscale_set = false, quality_set = false, method_set = false, speed_set = false, crf_set = false;
+	auto preset = profile.GetPreset();
+	int qscale = profile.GetQScale(&qscale_set);
+	int quality = profile.GetQuality(&quality_set);
+	int method = profile.GetMethod(&method_set);
+	bool lossless = profile.GetLossless();
+	auto chroma_sampling = profile.GetChromaSampling();
+	int speed = profile.GetSpeed(&speed_set);
+	int crf = profile.GetCrf(&crf_set);
+	bool is_jpeg = (codec_id == cmn::MediaCodecId::Jpeg);
+	bool is_webp = (codec_id == cmn::MediaCodecId::Webp);
+	bool is_avif = (codec_id == cmn::MediaCodecId::Avif);
+
+	if (qscale_set && is_jpeg == false)
+	{
+		logtw("<QScale> only applies to jpeg image profiles; ignored for %s", profile.GetCodec().CStr());
+		qscale_set = false;
+	}
+	if (chroma_sampling.IsEmpty() == false && is_jpeg == false && is_avif == false)
+	{
+		logtw("<ChromaSampling> only applies to jpeg and avif image profiles; ignored for %s", profile.GetCodec().CStr());
+		chroma_sampling = "";
+	}
+	if (speed_set && is_avif == false)
+	{
+		logtw("<Speed> only applies to avif image profiles; ignored for %s", profile.GetCodec().CStr());
+		speed_set = false;
+	}
+	if (crf_set && is_avif == false)
+	{
+		logtw("<Crf> only applies to avif image profiles; ignored for %s", profile.GetCodec().CStr());
+		crf_set = false;
+	}
+	if (quality_set && is_webp == false)
+	{
+		logtw("<Quality> only applies to webp image profiles; ignored for %s", profile.GetCodec().CStr());
+		quality_set = false;
+	}
+	if (method_set && is_webp == false)
+	{
+		logtw("<Method> only applies to webp image profiles; ignored for %s", profile.GetCodec().CStr());
+		method_set = false;
+	}
+	if (lossless && is_webp == false)
+	{
+		logtw("<Lossless> only applies to webp image profiles; ignored for %s", profile.GetCodec().CStr());
+		lossless = false;
+	}
+	if (preset.IsEmpty() == false && is_webp == false)
+	{
+		logtw("<Preset> only applies to webp image profiles; ignored for %s", profile.GetCodec().CStr());
+		preset = "";
+	}
+
+	if (qscale_set && (qscale < 1 || qscale > 31))
+	{
+		int clamped = (qscale < 1) ? 1 : 31;
+		logtw("<QScale> %d is out of range (1-31); using %d", qscale, clamped);
+		qscale = clamped;
+	}
+	if (quality_set && (quality < 0 || quality > 100))
+	{
+		int clamped = (quality < 0) ? 0 : 100;
+		logtw("<Quality> %d is out of range (0-100); using %d", quality, clamped);
+		quality = clamped;
+	}
+	if (method_set && (method < 0 || method > 6))
+	{
+		int clamped = (method < 0) ? 0 : 6;
+		logtw("<Method> %d is out of range (0-6); using %d", method, clamped);
+		method = clamped;
+	}
+	if (speed_set && (speed < 0 || speed > 8))
+	{
+		int clamped = (speed < 0) ? 0 : 8;
+		logtw("<Speed> %d is out of range (0-8); using %d", speed, clamped);
+		speed = clamped;
+	}
+	if (crf_set && (crf < 0 || crf > 63))
+	{
+		int clamped = (crf < 0) ? 0 : 63;
+		logtw("<Crf> %d is out of range (0-63); using %d", crf, clamped);
+		crf = clamped;
+	}
+	if (chroma_sampling.IsEmpty() == false && chroma_sampling != "420" && chroma_sampling != "444")
+	{
+		logtw("<ChromaSampling> '%s' is invalid (420 or 444); using 420", chroma_sampling.CStr());
+		chroma_sampling = "";
+	}
+	if (preset.IsEmpty() == false && preset != "none" && preset != "default" &&
+		preset != "picture" && preset != "photo" && preset != "drawing" &&
+		preset != "icon" && preset != "text")
+	{
+		logtw("<Preset> '%s' is not a libwebp preset (none/default/picture/photo/drawing/icon/text); ignored", preset.CStr());
+		preset = "";
+	}
+
+	output_track->SetPreset(preset);
+	qscale	= qscale_set ? qscale : 0;
+	quality = quality_set ? quality : -1;
+	method	= method_set ? method : -1;
+	speed	= speed_set ? speed : -1;
+	// 0 is a valid crf, so the default is filled in here
+	crf = crf_set ? crf : 23;
+	output_track->SetQuality(is_jpeg ? qscale : (is_avif ? crf : quality));
+	output_track->SetMethod(method);
+	output_track->SetLossless(lossless);
+	output_track->SetChromaSampling(chroma_sampling);
+	output_track->SetSpeed(speed);
 
 	// Github Issue : #1417
 	// Set any value for quick validation of the output track.

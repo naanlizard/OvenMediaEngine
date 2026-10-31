@@ -109,13 +109,13 @@ bool FilterLavfiRescaler::BuildDescription(ov::String &desc)
 		}
 		else
 		{
-			// Each format's implied colour: BT.601 full (JFIF) for JPEG, BT.601 limited for WebP; PNG
-			// goes to RGB through the input matrix
+			// Each format's implied colour: BT.601 full (JFIF) for JPEG, BT.601 limited for lossy WebP;
+			// PNG and lossless WebP go to RGB through the input matrix
 			if (out_codec_id == cmn::MediaCodecId::Jpeg)
 			{
 				color_args = ":out_color_matrix=smpte170m:out_range=jpeg";
 			}
-			else if (out_codec_id == cmn::MediaCodecId::Webp)
+			else if ((out_codec_id == cmn::MediaCodecId::Webp) && (_output_track->GetColorspace() == cmn::VideoPixelFormatId::YUV420P))
 			{
 				color_args = ":out_color_matrix=smpte170m:out_range=mpeg";
 			}

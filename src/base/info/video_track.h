@@ -54,6 +54,21 @@ public:
 	void SetPreset(ov::String preset);
 	ov::String GetPreset() const;
 
+	void SetQuality(int quality);
+	int GetQuality() const;
+
+	void SetSpeed(int speed);
+	int GetSpeed() const;
+
+	void SetChromaSampling(ov::String chroma_sampling);
+	ov::String GetChromaSampling() const;
+
+	void SetMethod(int method);
+	int GetMethod() const;
+
+	void SetLossless(bool lossless);
+	bool GetLossless() const;
+
 	void SetProfile(ov::String profile);
 	ov::String GetProfile() const;
 
@@ -132,6 +147,19 @@ protected:
 
 	// Preset for encoder (set by user)
 	ov::String _preset OV_GUARDED_BY(_video_mutex);
+
+	// mjpeg qscale (0 when unset), libwebp quality (-1 when unset) or libaom crf
+	int _quality OV_GUARDED_BY(_video_mutex) = 0;
+
+	// libaom cpu-used; -1 is the encoder default
+	int _speed OV_GUARDED_BY(_video_mutex) = -1;
+
+	ov::String _chroma_sampling OV_GUARDED_BY(_video_mutex);
+
+	// libwebp method; -1 is the encoder default
+	int _method OV_GUARDED_BY(_video_mutex) = -1;
+
+	bool _lossless OV_GUARDED_BY(_video_mutex) = false;
 
 	// Profile (set by user, used for h264, h265 codec)
 	ov::String _profile OV_GUARDED_BY(_video_mutex);

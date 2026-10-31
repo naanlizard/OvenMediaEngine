@@ -33,6 +33,14 @@ namespace cfg
 					int _skip_frames = -1;
 					// fit | crop | stretch
 					ov::String _scale_mode = "stretch";
+					ov::String _preset;
+					int _qscale = 0;
+					int _quality = -1;
+					int _method = -1;
+					bool _lossless = false;
+					ov::String _chroma_sampling;
+					int _speed = -1;
+					int _crf = -1;
 
 				public:
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetName, _name)
@@ -44,6 +52,14 @@ namespace cfg
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetBypassIfMatch, _bypass_if_match)
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetSkipFrames, _skip_frames)
 					CFG_DECLARE_CONST_REF_GETTER_OF(GetScaleMode, _scale_mode)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetPreset, _preset)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetQScale, _qscale)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetQuality, _quality)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetMethod, _method)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetLossless, _lossless)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetChromaSampling, _chroma_sampling)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetSpeed, _speed)
+					CFG_DECLARE_CONST_REF_GETTER_OF(GetCrf, _crf)
 
 					void SetName(const ov::String &name)
 					{
@@ -73,6 +89,14 @@ namespace cfg
 										   [=]() -> std::shared_ptr<ConfigError> {
 											   return ::cmn::GetVideoScaleModeByName(_scale_mode).has_value() ? nullptr : CreateConfigErrorPtr("ScaleMode must be fit, crop or stretch");
 										   });
+						Register<Optional>("Preset", &_preset);
+						Register<Optional>("QScale", &_qscale);
+						Register<Optional>("Quality", &_quality);
+						Register<Optional>("Method", &_method);
+						Register<Optional>("Lossless", &_lossless);
+						Register<Optional>("ChromaSampling", &_chroma_sampling);
+						Register<Optional>("Speed", &_speed);
+						Register<Optional>("Crf", &_crf);
 					}
 				};
 			}  // namespace oprf

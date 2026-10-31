@@ -56,3 +56,40 @@ TEST(MediaTrackContent, UnknownLayoutsAreToldApartByTheRawValue)
 	EXPECT_TRUE(unknown_a.HasSameContent(same_as_a));
 	EXPECT_FALSE(unknown_a.HasSameContent(known));
 }
+
+namespace
+{
+	void ExpectImageEncoderFields(const MediaTrack &track, const char *path)
+	{
+		SCOPED_TRACE(path);
+		EXPECT_EQ(track.GetQuality(), 7);
+		EXPECT_EQ(track.GetSpeed(), 4);
+		EXPECT_STREQ(track.GetChromaSampling().CStr(), "444");
+		EXPECT_EQ(track.GetMethod(), 3);
+		EXPECT_TRUE(track.GetLossless());
+	}
+}  // namespace
+
+TEST(MediaTrackUpdate, CopiesImageEncoderFields)
+{
+	MediaTrack source;
+	source.SetId(1);
+	source.SetMediaType(cmn::MediaType::Video);
+	source.SetQuality(7);
+	source.SetSpeed(4);
+	source.SetChromaSampling("444");
+	source.SetMethod(3);
+	source.SetLossless(true);
+
+	MediaTrack updated;
+	updated.SetId(1);
+	ASSERT_TRUE(updated.Update(source));
+	ExpectImageEncoderFields(updated, "Update");
+
+	MediaTrack copied(source);
+	ExpectImageEncoderFields(copied, "copy constructor");
+
+	auto cloned = source.Clone();
+	ASSERT_NE(cloned, nullptr);
+	ExpectImageEncoderFields(*cloned, "Clone");
+}

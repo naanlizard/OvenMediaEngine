@@ -40,11 +40,16 @@ public:
 			case cmn::MediaCodecId::Png:
 				return cmn::VideoPixelFormatId::RGBA;
 			case cmn::MediaCodecId::Jpeg:
-				return cmn::VideoPixelFormatId::YUVJ420P;
+				return (_track != nullptr && _track->GetChromaSampling() == "444")
+						   ? cmn::VideoPixelFormatId::YUVJ444P
+						   : cmn::VideoPixelFormatId::YUVJ420P;
 			case cmn::MediaCodecId::Webp:
-				return cmn::VideoPixelFormatId::YUV420P;
+				// libwebp takes lossless input as RGB32, which is BGRA on little-endian hosts
+				return IsLosslessWebp() ? cmn::VideoPixelFormatId::BGRA : cmn::VideoPixelFormatId::YUV420P;
 			case cmn::MediaCodecId::Avif:
-				return cmn::VideoPixelFormatId::YUV420P;
+				return (_track != nullptr && _track->GetChromaSampling() == "444")
+						   ? cmn::VideoPixelFormatId::YUV444P
+						   : cmn::VideoPixelFormatId::YUV420P;
 			default:
 				return cmn::VideoPixelFormatId::None;
 		}
@@ -75,6 +80,18 @@ protected:
 
 private:
 	// ----- Internal helpers -----
+	// A preset other than "none" replaces Lossless with its own setting
+	bool IsLosslessWebp() const
+	{
+		if (_track == nullptr || _track->GetLossless() == false)
+		{
+			return false;
+		}
+
+		auto preset = _track->GetPreset();
+		return preset.IsEmpty() || (preset == "none");
+	}
+
 	bool OpenCodec();
 	void SetParamsCommon();
 	bool SetParamsJpeg();

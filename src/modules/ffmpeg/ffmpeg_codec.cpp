@@ -157,6 +157,12 @@ namespace ffmpeg
 		if (media_type == cmn::MediaType::Video)
 		{
 			frame->pict_type = force_keyframe ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+
+			// Fixed-qscale encoders (mjpeg) read the quantizer from each frame, not from global_quality.
+			if (_context->flags & AV_CODEC_FLAG_QSCALE)
+			{
+				frame->quality = _context->global_quality;
+			}
 		}
 
 		return ToCodecResult(::avcodec_send_frame(_context, frame));
