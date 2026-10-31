@@ -10,12 +10,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 
 #include <base/info/stream.h>
 #include <modules/ffmpeg/compat.h>
 
 #include "filter/filter_lavfi_resampler.h"
+#include "filter/filter_lavfi_rescaler.h"
 #include "transcoder_filter.h"
 
 namespace
@@ -269,4 +271,79 @@ TEST(MediaFrameClone, CopiesColorTags)
 	ASSERT_NE(clone, nullptr);
 	EXPECT_EQ(clone->GetColorMatrix(), cmn::ColorMatrix::BT709);
 	EXPECT_EQ(clone->GetColorRange(), cmn::ColorRange::Limited);
+}
+
+TEST(FilterLavfiRescaler, ImageOutputCarriesItsFormatsColour)
+{
+	struct Case
+	{
+		cmn::MediaCodecId codec;
+		cmn::VideoPixelFormatId format;
+		bool bt601;
+		AVColorRange range;
+	};
+
+	for (const auto &image : {Case{cmn::MediaCodecId::Jpeg, cmn::VideoPixelFormatId::YUVJ420P, true, AVCOL_RANGE_JPEG},
+							  Case{cmn::MediaCodecId::Webp, cmn::VideoPixelFormatId::YUV420P, true, AVCOL_RANGE_MPEG},
+							  // Without the colorspace filter, AVIF passes the source's BT.709 limited range through
+							  Case{cmn::MediaCodecId::Avif, cmn::VideoPixelFormatId::YUV420P, false,
+								   FilterLavfiRescaler::ConvertsAvifColour() ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG}})
+	{
+
+		auto input_stream_info	= std::make_shared<info::Stream>(StreamSourceType::Ovt);
+		auto output_stream_info = std::make_shared<info::Stream>(StreamSourceType::Ovt);
+		auto input_track		= MakeVideoTrack(0, 640, 360);
+		auto output_track		= MakeVideoTrack(100, 320, 180);
+		output_track->SetCodecId(image.codec);
+		output_track->SetColorspace(image.format);
+
+		std::mutex output_mutex;
+		std::shared_ptr<MediaFrame> output;
+		auto filter = TranscodeFilter::Create(
+			0, input_stream_info, input_track, output_stream_info, output_track,
+			[&](TranscodeResult result, int32_t id, std::shared_ptr<MediaFrame> frame) {
+				std::lock_guard<std::mutex> lock(output_mutex);
+				if ((result == TranscodeResult::DataReady) && (frame != nullptr) && (output == nullptr))
+				{
+					output = frame;
+				}
+			});
+		ASSERT_NE(filter, nullptr);
+
+		int64_t pts = 0;
+		for (int i = 0; i < 5; i++)
+		{
+			filter->SendBuffer(MakeVideoFrame(640, 360, AV_PIX_FMT_YUV420P, AVCOL_SPC_BT709, AVCOL_RANGE_MPEG, pts));
+			pts += 3000;
+		}
+
+		for (int i = 0; i < 100; i++)
+		{
+			{
+				std::lock_guard<std::mutex> lock(output_mutex);
+				if (output != nullptr)
+				{
+					break;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+
+		filter->Stop();
+
+		std::lock_guard<std::mutex> lock(output_mutex);
+		ASSERT_NE(output, nullptr) << cmn::GetCodecIdString(image.codec);
+		auto av_frame = static_cast<const AVFrame *>(output->GetPrivData());
+		ASSERT_NE(av_frame, nullptr);
+		// swscale tags its BT.601 matrix as BT470BG, the same coefficients as SMPTE170M
+		if (image.bt601)
+		{
+			EXPECT_TRUE((av_frame->colorspace == AVCOL_SPC_BT470BG) || (av_frame->colorspace == AVCOL_SPC_SMPTE170M)) << cmn::GetCodecIdString(image.codec) << " " << av_frame->colorspace;
+		}
+		else
+		{
+			EXPECT_EQ(av_frame->colorspace, AVCOL_SPC_BT709) << cmn::GetCodecIdString(image.codec);
+		}
+		EXPECT_EQ(av_frame->color_range, image.range) << cmn::GetCodecIdString(image.codec);
+	}
 }

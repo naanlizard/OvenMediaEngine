@@ -216,6 +216,25 @@ DecodeResult AVCodecVideoDecoder::ReceiveFrame()
 		return DecodeResult::NoOutput();
 	}
 
+	// A source that signals no matrix or range is taken as BT.709 limited range, at every resolution
+	auto av_frame = static_cast<AVFrame *>(decoded_frame->GetPrivData());
+	if (decoded_frame->GetColorMatrix() == cmn::ColorMatrix::Unspecified)
+	{
+		decoded_frame->SetColorMatrix(cmn::ColorMatrix::BT709);
+		if (av_frame != nullptr)
+		{
+			av_frame->colorspace = AVCOL_SPC_BT709;
+		}
+	}
+	if (decoded_frame->GetColorRange() == cmn::ColorRange::Unspecified)
+	{
+		decoded_frame->SetColorRange(cmn::ColorRange::Limited);
+		if (av_frame != nullptr)
+		{
+			av_frame->color_range = AVCOL_RANGE_MPEG;
+		}
+	}
+
 	// If the decoder did not provide a duration, calculate it from the frame rate
 	const auto framerate = _codec.GetFrameRate();
 	const auto timebase_expr = GetRefTrack()->GetTimeBase().GetExpr();

@@ -18,6 +18,21 @@ FilterLavfiRescaler::~FilterLavfiRescaler()
 	Uninitialize();
 }
 
+bool FilterLavfiRescaler::ConvertsAvifColour()
+{
+	// The bundled FFmpeg build does not enable the filter
+	static const bool available = [] {
+		bool found = (::avfilter_get_by_name("colorspace") != nullptr);
+		if (found == false)
+		{
+			logtw("FFmpeg has no colorspace filter, so AVIF thumbnails keep the decoded samples and are tagged BT.709 limited range");
+		}
+		return found;
+	}();
+
+	return available;
+}
+
 /**
  * Output Module Cases
  * - OPENH264(default), X264, LIBVPX : SW-based module (CPU memory)
@@ -71,7 +86,47 @@ bool FilterLavfiRescaler::BuildDescription(ov::String &desc)
 		desc += ov::String::FormatString("crop=%d:%d:%d:%d,", _geometry.src.width, _geometry.src.height, _geometry.src.x, _geometry.src.y);
 	}
 
-	desc += ov::String::FormatString("scale=%dx%d:flags=bilinear", _geometry.dst.width, _geometry.dst.height);
+	const auto &resolution = _geometry.dst;
+	auto out_codec_id = _output_track->GetCodecId();
+	bool image_track = cmn::IsImageCodec(out_codec_id);
+	if (image_track)
+	{
+		ov::String color_args = "";
+		// accurate_rnd measurably improves WebP colour; the other formats are close enough without it
+		const char *sws_flags = (out_codec_id == cmn::MediaCodecId::Webp)
+									? "bilinear+accurate_rnd"
+									: "bilinear";
+		if ((out_codec_id == cmn::MediaCodecId::Avif) && ConvertsAvifColour())
+		{
+			// colorspace converts the matrix from each frame's tag, as a same-format scale leaves it. RGB and
+			// grayscale input carry no YUV matrix, so scale gives them one. BT.601 gamut is not converted
+			auto src_desc  = ::av_pix_fmt_desc_get(ffmpeg::compat::ToAVPixelFormat(_src_pixfmt));
+			bool yuv_input = (src_desc != nullptr) && ((src_desc->flags & AV_PIX_FMT_FLAG_RGB) == 0) && (src_desc->nb_components >= 3);
+			desc += ov::String::FormatString(
+				"scale=%dx%d:flags=%s%s,"
+				"colorspace=all=bt709:range=pc:iprimaries=bt709:itrc=bt709",
+				resolution.width, resolution.height, sws_flags, yuv_input ? "" : ":out_color_matrix=bt709:out_range=tv");
+		}
+		else
+		{
+			// Each format's implied colour: BT.601 full (JFIF) for JPEG, BT.601 limited for WebP; PNG
+			// goes to RGB through the input matrix
+			if (out_codec_id == cmn::MediaCodecId::Jpeg)
+			{
+				color_args = ":out_color_matrix=smpte170m:out_range=jpeg";
+			}
+			else if (out_codec_id == cmn::MediaCodecId::Webp)
+			{
+				color_args = ":out_color_matrix=smpte170m:out_range=mpeg";
+			}
+			desc += ov::String::FormatString("scale=%dx%d:flags=%s%s",
+											 resolution.width, resolution.height, sws_flags, color_args.CStr());
+		}
+	}
+	else
+	{
+		desc += ov::String::FormatString("scale=%dx%d:flags=bilinear", resolution.width, resolution.height);
+	}
 
 	return true;
 }
@@ -87,6 +142,14 @@ bool FilterLavfiRescaler::InitializeSourceFilter()
 	src_params.push_back(ov::String::FormatString("pixel_aspect=%d/%d", 1, 1));
 	src_params.push_back(ov::String::FormatString("colorspace=%d", static_cast<int32_t>(ffmpeg::compat::ToAVColorSpace(_input_track->GetColorMatrix()))));
 	src_params.push_back(ov::String::FormatString("range=%d", static_cast<int32_t>(ffmpeg::compat::ToAVColorRange(_input_track->GetColorRange()))));
+
+	// colorspace rejects an unspecified input matrix; scale follows each frame's tags, so a BT.601 frame
+	// still reaches colorspace as BT.601
+	if ((_output_track->GetCodecId() == cmn::MediaCodecId::Avif) && ConvertsAvifColour())
+	{
+		src_params.push_back("colorspace=bt709");
+		src_params.push_back("range=tv");
+	}
 
 	_src_args = ov::String::Join(src_params, ":");
 

@@ -80,6 +80,11 @@ The image encoding profile is only used by thumbnail publishers. and, bypass opt
 
 :::
 
+#### Color handling
+
+Thumbnails are converted to the colorimetry each format implies: BT.601 full range (JFIF) for JPEG, BT.601 limited range for WebP, and RGB for PNG. Sources tagged BT.709 or BT.601 are converted accordingly; untagged sources are taken as BT.709 limited range, so streamers should tag the matrix and range they send. PNG thumbnails are written without cICP, cHRM or gAMA chunks.
+
+AVIF thumbnails are converted to BT.709 full range, and say so in their CICP, only when FFmpeg provides the `colorspace` filter, which the FFmpeg that OvenMediaEngine's prerequisite script builds does not enable. Otherwise they keep the decoded samples and are tagged BT.709 limited range, and a warning is logged once.
 
 ### Publisher
 

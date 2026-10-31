@@ -10,6 +10,7 @@
 
 #include <modules/containers/avif/avif_packager.h>
 
+#include "../../filter/filter_lavfi_rescaler.h"
 #include "../../transcoder_private.h"
 
 void AVCodecImageEncoder::SetParamsCommon()
@@ -79,13 +80,13 @@ bool AVCodecImageEncoder::SetParamsAvif()
 	// The context defaults to UNSPECIFIED and libaom takes the CICP verbatim, so without these
 	// the still carries no colour tag. It goes into the sequence header, hence before open.
 	//
-	// TODO(Keukhan): a non-BT.709 source (BT.601 SD, BT.2020/HLG) is mistagged - nothing in
-	// the filter graph converts the frames.
+	// TODO(Keukhan): without FFmpeg's colorspace filter, a non-BT.709 source (BT.601 SD, BT.2020/HLG)
+	// is mistagged - nothing in the filter graph converts the frames.
 	AVCodecContext *context	 = _codec.Get();
 	context->color_primaries = AVCOL_PRI_BT709;
 	context->color_trc		 = AVCOL_TRC_BT709;
 	context->colorspace		 = AVCOL_SPC_BT709;
-	_codec.SetColorRange(cmn::ColorRange::Limited);
+	_codec.SetColorRange(FilterLavfiRescaler::ConvertsAvifColour() ? cmn::ColorRange::Full : cmn::ColorRange::Limited);
 
 	_codec.SetThreadCount(1);
 
@@ -166,6 +167,18 @@ EncodeResult AVCodecImageEncoder::SendFrame(const std::shared_ptr<const MediaFra
 			logte("Error sending a frame for encoding. reason(%s)", _codec.GetLastErrorString().CStr());
 		}
 		return EncodeResult::NoOutput();
+	}
+
+	// No cICP, cHRM or gAMA chunk, which browsers would honour over the sRGB every other thumbnail implies
+	if (_codec_id == cmn::MediaCodecId::Png)
+	{
+		auto *av_frame = static_cast<AVFrame *>(frame->GetPrivData());
+		if (av_frame != nullptr)
+		{
+			av_frame->color_primaries = AVCOL_PRI_UNSPECIFIED;
+			av_frame->color_trc		  = AVCOL_TRC_UNSPECIFIED;
+			av_frame->colorspace	  = AVCOL_SPC_UNSPECIFIED;
+		}
 	}
 
 	auto result = _codec.SendFrame(frame, force_keyframe);

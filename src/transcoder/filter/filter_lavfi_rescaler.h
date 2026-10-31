@@ -27,6 +27,9 @@ public:
 	bool SendFrame(std::shared_ptr<MediaFrame> media_frame) override;
 	std::shared_ptr<MediaFrame> ReceiveFrame() override;
 
+	// Whether AVIF frames are converted to BT.709 full range, which needs FFmpeg's colorspace filter
+	static bool ConvertsAvifColour();
+
 private:
 	// ----- Internal helpers (FFmpeg avfilter graph) -----
 	bool BuildDescription(ov::String &desc);
