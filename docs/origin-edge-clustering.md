@@ -264,11 +264,14 @@ This means that existing settings do not need to be updated when extending Origi
         
         <!-- This is only needed for the origin server and used to register the ovt address of the stream.  -->
         <OriginHostName>ome-dev.ovenmedia.com</OriginHostName>
+        <!-- Optional: the OVT port edges connect to, when it differs from the bind port -->
+        <!-- <OriginPort>31001</OriginPort> -->
     </OriginMapStore>
     ...
 </VirtualHost>
 ```
 
+`OriginPort` sets the port of the OVT address the origin registers in Redis, for an origin reached through a mapped port such as a Kubernetes NodePort. It takes 1 to 65535 and defaults to the OVT publisher's bind port. The OVT listener keeps its bind port.
 
 ## Dynamic Application
 

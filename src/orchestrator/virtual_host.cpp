@@ -42,7 +42,8 @@ namespace ocst
 
 			if (store.GetOriginHostName().IsEmpty() == false)
 			{
-				_origin_base_url = ov::String::FormatString("ovt://%s:%d", store.GetOriginHostName().CStr(), ovt_port.GetPort());
+				auto advertised_port = (store.GetOriginPort() > 0) ? store.GetOriginPort() : ovt_port.GetPort();
+				_origin_base_url = ov::String::FormatString("ovt://%s:%d", store.GetOriginHostName().CStr(), advertised_port);
 			}
 			else
 			{
