@@ -20,6 +20,7 @@
 #                                          faster but only runs on CPUs like the build machine;
 #                                          applied at install time - rerun with -DTARGET=whisper
 #                                          to switch an existing installation)
+#   -DOME_PREREQ_JOBS=<n>                  Parallel build jobs (default: nproc)
 #   -DTARGET=<name>                        Install only this target
 #
 # Example:
@@ -74,6 +75,14 @@ if("${OME_TARGET_PROCESSOR}" STREQUAL "")
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET)
     endif()
+endif()
+
+if(NOT DEFINED OME_PREREQ_JOBS)
+    set(_J "-j$(nproc)")
+elseif(OME_PREREQ_JOBS MATCHES "^[1-9][0-9]*$")
+    set(_J "-j${OME_PREREQ_JOBS}")
+else()
+    message(FATAL_ERROR "[OME Prerequisites] OME_PREREQ_JOBS must be a positive integer: '${OME_PREREQ_JOBS}'")
 endif()
 
 # Library versions - defined in a shared file so Dependencies.cmake can use the same values.
@@ -407,7 +416,6 @@ endif()
 # ==============================================================================
 
 set(_COMMON_ENV "PATH=${PREFIX}/bin:$PATH PKG_CONFIG_PATH=${PREFIX}/lib/pkgconfig:${PREFIX}/lib64/pkgconfig:$PKG_CONFIG_PATH")
-set(_J "-j$(nproc)")
 
 # ---- NASM ----
 set(_install_nasm "
@@ -605,7 +613,7 @@ make ${_J} && sudo make install && sudo rm -rf ${PREFIX}/share && rm -rf ${TEMP_
 set(_STUB_DIR "${CMAKE_CURRENT_LIST_DIR}/../misc/stubs")
 set(_install_stubs "
 cmake -S ${_STUB_DIR} -B ${_STUB_DIR}/build -DCMAKE_INSTALL_PREFIX=${PREFIX} &&
-cmake --build ${_STUB_DIR}/build --target stubs -j$(nproc) &&
+cmake --build ${_STUB_DIR}/build --target stubs ${_J} &&
 sudo cmake --install ${_STUB_DIR}/build --component stubs && 
 rm -rf ${_STUB_DIR}/build
 ")

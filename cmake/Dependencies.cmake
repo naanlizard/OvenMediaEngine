@@ -192,6 +192,9 @@ macro(ome_find_pkg var pkg version_var)
             list(APPEND _FP_HWACCEL_ARGS -DOME_WHISPER_STATIC=ON)
         endif()
         list(APPEND _FP_HWACCEL_ARGS -DOME_USE_CLANG=${OME_USE_CLANG})
+        if(DEFINED OME_PREREQ_JOBS)
+            list(APPEND _FP_HWACCEL_ARGS "-DOME_PREREQ_JOBS=${OME_PREREQ_JOBS}")
+        endif()
         if(OME_WHISPER_NATIVE)
             list(APPEND _FP_HWACCEL_ARGS -DOME_WHISPER_NATIVE=ON)
         endif()
@@ -447,10 +450,15 @@ endif()
 if(OME_HWACCEL_NVIDIA OR OME_HWACCEL_XMA)
     if(NOT IS_DIRECTORY "${OME_DEP_PREFIX}/lib/stubs")
         message(STATUS "[OME] ${OME_DEP_PREFIX}/lib/stubs not found - installing stubs libraries ...")
+        set(_stubs_args)
+        if(DEFINED OME_PREREQ_JOBS)
+            list(APPEND _stubs_args "-DOME_PREREQ_JOBS=${OME_PREREQ_JOBS}")
+        endif()
         execute_process(
             COMMAND ${CMAKE_COMMAND}
                 -DOME_DEP_PREFIX=${OME_DEP_PREFIX}
                 -DTARGET=stubs
+                ${_stubs_args}
                 -P "${CMAKE_SOURCE_DIR}/cmake/InstallPrerequisites.cmake"
             RESULT_VARIABLE _stubs_ret
         )
@@ -458,6 +466,7 @@ if(OME_HWACCEL_NVIDIA OR OME_HWACCEL_XMA)
             message(FATAL_ERROR "[OME] Failed to install stubs.")
         endif()
         unset(_stubs_ret)
+        unset(_stubs_args)
     endif()
 endif()
 
