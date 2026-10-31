@@ -195,19 +195,18 @@ namespace mon
 		UpdateDate();
 	}
 
-	void CommonMetrics::IncreaseBytesOut(PublisherType type, uint64_t value)
+	void CommonMetrics::IncreaseBytesOut(PublisherType type, uint64_t value, std::chrono::system_clock::time_point now)
 	{
 		if (value == 0)
 		{
 			return;
 		}
 
-		_publisher_metrics[static_cast<int8_t>(type)]._bytes_out += value;
-		_total_bytes_out += value;
-		_last_sent_time.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
-		_last_sent_time_steady.store(std::chrono::steady_clock::now(), std::memory_order_relaxed);
+		_publisher_metrics[static_cast<int8_t>(type)]._bytes_out.fetch_add(value, std::memory_order_relaxed);
+		_total_bytes_out.fetch_add(value, std::memory_order_relaxed);
+		_last_sent_time.store(now, std::memory_order_relaxed);
 
-		UpdateDate();
+		UpdateDate(now);
 	}
 
 	void CommonMetrics::IncreaseModuleUsageCount(cmn::MediaCodecModuleId module_id)
@@ -250,9 +249,9 @@ namespace mon
 	}
 
 	// Renew last updated time
-	void CommonMetrics::UpdateDate()
+	void CommonMetrics::UpdateDate(std::chrono::system_clock::time_point now)
 	{
-		_last_updated_time.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
+		_last_updated_time.store(now, std::memory_order_relaxed);
 	}
 
 	void CommonMetrics::UpdateThroughput()

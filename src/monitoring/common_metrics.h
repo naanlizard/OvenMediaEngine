@@ -40,7 +40,7 @@ namespace mon
 		uint32_t GetModuleUsageCount(cmn::MediaCodecModuleId module_id) const;
 
 		virtual void IncreaseBytesIn(uint64_t value);
-		virtual void IncreaseBytesOut(PublisherType type, uint64_t value);
+		virtual void IncreaseBytesOut(PublisherType type, uint64_t value, std::chrono::system_clock::time_point now);
 		void IncreaseModuleUsageCount(cmn::MediaCodecModuleId module_id);
 		void DecreaseModuleUsageCount(cmn::MediaCodecModuleId module_id);
 		virtual void OnSessionConnected(PublisherType type);
@@ -52,7 +52,7 @@ namespace mon
 		virtual ~CommonMetrics() = default;
 
 		// Renew last updated time
-		void UpdateDate();
+		void UpdateDate(std::chrono::system_clock::time_point now = std::chrono::system_clock::now());
 		void UpdateThroughput();
 
 		std::chrono::system_clock::time_point _created_time;

@@ -22,6 +22,7 @@ namespace mon
 			std::unique_lock<std::shared_mutex> lock(_server_metric_guard);
 			to_release = std::move(_server_metric);
 			_server_metric = nullptr;
+			++_metrics_generation;
 		}
 		if (to_release != nullptr)
 		{
@@ -109,6 +110,7 @@ namespace mon
 		{
 			std::unique_lock<std::shared_mutex> lock(_server_metric_guard);
 			_server_metric = std::make_shared<ServerMetrics>(server_config);
+			++_metrics_generation;
 		}
 
 		auto server_metric = GetServerMetrics();
@@ -156,6 +158,7 @@ namespace mon
 		{
 			return false;
 		}
+		++_metrics_generation;
 
 		return true;
 	}
@@ -210,6 +213,7 @@ namespace mon
 		{
 			return false;
 		}
+		++_metrics_generation;
 
 		return true;
 	}
@@ -397,6 +401,7 @@ namespace mon
 			{
 				return false;
 			}
+			++_metrics_generation;
 		}
 
 		return true;
@@ -464,31 +469,53 @@ namespace mon
 
 	void Monitoring::IncreaseBytesOut(const info::Stream &stream_info, PublisherType type, uint64_t value)
 	{
+		if (value == 0)
+		{
+			return;
+		}
+
+		// Read before resolving, so a metric resolved during a removal is cached under the old generation
+		const auto generation = _metrics_generation.load();
 		auto server_metric = GetServerMetrics();
 		if (server_metric == nullptr)
 		{
 			return;
 		}
-		auto host_metric = server_metric->GetHostMetrics(stream_info.GetApplicationInfo().GetHostInfo());
-		if (host_metric == nullptr)
+
+		static thread_local uint64_t tl_generation = 0;
+		static thread_local std::weak_ptr<StreamMetrics> tl_stream_metric;
+		static thread_local std::weak_ptr<StreamMetrics> tl_input_stream_metric;
+
+		const auto &app_info = stream_info.GetApplicationInfo();
+		auto stream_metric = (tl_generation == generation) ? tl_stream_metric.lock() : nullptr;
+		if (stream_metric == nullptr || stream_metric->GetId() != stream_info.GetId() ||
+			stream_metric->GetApplicationInfo().GetId() != app_info.GetId() ||
+			stream_metric->GetApplicationInfo().GetHostInfo().GetId() != app_info.GetHostInfo().GetId())
 		{
-			return;
-		}
-		auto app_metric = host_metric->GetApplicationMetrics(stream_info.GetApplicationInfo());
-		if (app_metric == nullptr)
-		{
-			return;
-		}
-		auto stream_metric = app_metric->GetStreamMetrics(stream_info);
-		if (stream_metric == nullptr)
-		{
-			return;
+			stream_metric = GetStreamMetrics(stream_info);
+			if (stream_metric == nullptr)
+			{
+				return;
+			}
+			auto input_stream = stream_metric->GetLinkedInputStream();
+			tl_input_stream_metric = (input_stream != nullptr) ? stream_metric->GetApplicationMetrics()->GetStreamMetrics(*input_stream) : nullptr;
+			tl_generation = generation;
+			tl_stream_metric = stream_metric;
 		}
 
-		server_metric->IncreaseBytesOut(type, value);
-		host_metric->IncreaseBytesOut(type, value);
-		app_metric->IncreaseBytesOut(type, value);
-		stream_metric->IncreaseBytesOut(type, value);
+		const auto &app_metric = stream_metric->GetApplicationMetrics();
+		const auto &host_metric = app_metric->GetHostMetrics();
+		const auto input_stream_metric = tl_input_stream_metric.lock();
+		const auto now = std::chrono::system_clock::now();
+
+		server_metric->IncreaseBytesOut(type, value, now);
+		host_metric->IncreaseBytesOut(type, value, now);
+		app_metric->IncreaseBytesOut(type, value, now);
+		stream_metric->IncreaseBytesOut(type, value, now);
+		if (input_stream_metric != nullptr)
+		{
+			input_stream_metric->IncreaseBytesOut(type, value, now);
+		}
 	}
 
 	void Monitoring::OnSessionConnected(const info::Stream &stream_info, PublisherType type)

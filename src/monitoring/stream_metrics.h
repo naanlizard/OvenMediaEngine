@@ -32,7 +32,7 @@ namespace mon
 			_app_metrics.reset();
 		}
 
-		std::shared_ptr<ApplicationMetrics> GetApplicationMetrics()
+		const std::shared_ptr<ApplicationMetrics> &GetApplicationMetrics()
 		{
 			return _app_metrics;
 		}
@@ -50,7 +50,7 @@ namespace mon
 
 		// Overriding from CommonMetrics
 		void IncreaseBytesIn(uint64_t value) override;
-		void IncreaseBytesOut(PublisherType type, uint64_t value) override;
+		void IncreaseBytesOut(PublisherType type, uint64_t value, std::chrono::system_clock::time_point now) override;
 		// Since `Increase...()` is called in `Monitoring::OnStreamPrepared()`
 		// and `Decrease...()` is called in `Monitoring::OnStreamDeleted()`,
 		// and it is not guaranteed that these two are always called in pairs.

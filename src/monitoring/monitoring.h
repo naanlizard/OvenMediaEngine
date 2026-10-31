@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "./alert/alert.h"
 #include "base/info/info.h"
 #include "base/ovlibrary/delay_queue.h"
@@ -66,6 +68,8 @@ namespace mon
 		
 
 	private:
+		// Bumped after every removal and server reset; invalidates the per-thread caches of IncreaseBytesOut()
+		std::atomic<uint64_t> _metrics_generation{0};
 		ov::DelayQueue _timer{"MonLogTimer"};
 		mutable std::shared_mutex _server_metric_guard;
 		std::shared_ptr<ServerMetrics> _server_metric = nullptr;

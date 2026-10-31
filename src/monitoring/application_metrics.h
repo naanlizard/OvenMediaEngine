@@ -41,7 +41,7 @@ namespace mon
 			_streams.clear();
 		}
 
-		std::shared_ptr<HostMetrics> GetHostMetrics()
+		const std::shared_ptr<HostMetrics> &GetHostMetrics()
 		{
 			return _host_metrics;
 		}

@@ -86,20 +86,10 @@ namespace mon
 		}
 	}
 
-	void StreamMetrics::IncreaseBytesOut(PublisherType type, uint64_t value)
+	void StreamMetrics::IncreaseBytesOut(PublisherType type, uint64_t value, std::chrono::system_clock::time_point now)
 	{
-		CommonMetrics::IncreaseBytesOut(type, value);
-
-		// If this stream is child then send event to parent
-		auto origin_stream_info = GetLinkedInputStream();
-		if (origin_stream_info != nullptr)
-		{
-			auto origin_stream_metric = _app_metrics->GetStreamMetrics(*origin_stream_info);
-			if (origin_stream_metric != nullptr)
-			{
-				origin_stream_metric->IncreaseBytesOut(type, value);
-			}
-		}
+		CommonMetrics::IncreaseBytesOut(type, value, now);
+		_last_sent_time_steady.store(std::chrono::steady_clock::now(), std::memory_order_relaxed);
 	}
 
 	void StreamMetrics::IncreaseModuleUsageCount(const std::shared_ptr<const MediaTrack> &media_track)
