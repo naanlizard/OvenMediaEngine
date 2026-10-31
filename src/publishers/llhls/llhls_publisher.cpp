@@ -287,11 +287,12 @@ std::shared_ptr<LLHlsHttpInterceptor> LLHlsPublisher::CreateInterceptor()
 		auto stream_name = final_url->Stream();
 
 		uint64_t session_life_time = 0;
-		bool access_control_enabled = IsAccessControlEnabled(final_url);
+		bool access_control_enabled = IsAccessControlEnabled(vhost_app_name.GetVHostName());
 		bool admitted_by_webhooks = false;
+		auto file = final_url->File();
 
 		// Check if the request is for the master playlist
-		if (access_control_enabled == true && (final_url->File().IndexOf(".m3u8") > 0 && final_url->File().IndexOf("chunklist") == -1))
+		if (access_control_enabled == true && (file.IndexOf(".m3u8") > 0 && file.IndexOf("chunklist") == -1))
 		{
 			auto request_info = std::make_shared<ac::RequestInfo>(final_url, nullptr, request->GetRemote(), request);
 
@@ -346,6 +347,7 @@ std::shared_ptr<LLHlsHttpInterceptor> LLHlsPublisher::CreateInterceptor()
 					vhost_app_name = ocst::Orchestrator::GetInstance()->ResolveApplicationNameFromDomain(final_url->Host(), final_url->App());
 					host_name = final_url->Host();
 					stream_name = final_url->Stream();
+					file = final_url->File();
 				}
 			}
 			else if (webhooks_result == AccessController::VerificationResult::Error)
@@ -379,7 +381,7 @@ std::shared_ptr<LLHlsHttpInterceptor> LLHlsPublisher::CreateInterceptor()
 		}
 
 		auto application = std::static_pointer_cast<LLHlsApplication>(GetApplicationByName(vhost_app_name));
-		auto stream = std::static_pointer_cast<LLHlsStream>(GetStream(vhost_app_name, stream_name));
+		auto stream = (application != nullptr) ? std::static_pointer_cast<LLHlsStream>(application->GetStream(stream_name)) : nullptr;
 		if (stream == nullptr)
 		{
 			// PullStream may create the app from the wildcard template
@@ -436,7 +438,7 @@ std::shared_ptr<LLHlsHttpInterceptor> LLHlsPublisher::CreateInterceptor()
 		}
 		else
 		{
-			if (final_url->File().HasSuffix(".m3u8") == true && final_url->File().HasPrefix("chunklist") == false)
+			if (file.HasSuffix(".m3u8") == true && file.HasPrefix("chunklist") == false)
 			{
 				// One player is one session, and a master playlist request comes without a session value, so it always starts one
 				session = LLHlsSession::Create(stream->IssueUniqueSessionId(), origin_mode, "", stream->GetApplication(), stream, request->GetHeader("USER-AGENT"), session_life_time);

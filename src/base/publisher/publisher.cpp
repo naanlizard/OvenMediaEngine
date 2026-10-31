@@ -253,8 +253,12 @@ namespace pub
 
 	bool Publisher::IsAccessControlEnabled(const std::shared_ptr<const ov::Url> &request_url)
 	{
+		return IsAccessControlEnabled(ocst::Orchestrator::GetInstance()->GetVhostNameFromDomain(request_url->Host()));
+	}
+
+	bool Publisher::IsAccessControlEnabled(const ov::String &vhost_name)
+	{
 		auto orchestrator = ocst::Orchestrator::GetInstance();
-		auto vhost_name = orchestrator->GetVhostNameFromDomain(request_url->Host());
 
 		if (vhost_name.IsEmpty())
 		{

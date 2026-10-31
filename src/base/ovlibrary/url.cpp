@@ -68,6 +68,11 @@ namespace ov
 			return "";
 		}
 
+		if (value.IndexOf('%') == -1)
+		{
+			return value;
+		}
+
 		const auto val	  = value.CStr();
 		const auto length = value.GetLength();
 

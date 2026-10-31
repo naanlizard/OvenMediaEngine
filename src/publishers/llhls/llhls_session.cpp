@@ -7,6 +7,7 @@
 //
 //==============================================================================
 #include <modules/http/server/http_exchange.h>
+#include <charconv>
 #include "llhls_session.h"
 #include "llhls_application.h"
 #include "llhls_stream.h"
@@ -296,10 +297,11 @@ void LLHlsSession::OnMessageReceived(const std::any &message)
 	int64_t segment_number;
 	int64_t partial_number;
 	int64_t init_version;
-	ov::String stream_key;
+	std::string_view stream_key;
 
 	if (ParseFileName(file, file_type, track_id, segment_number, partial_number, init_version, stream_key) == false)
 	{
+		logtw("Invalid file name requested: %s", file.CStr());
 		response->SetStatusCode(http::StatusCode::NotFound);
 		ResponseData(exchange);
 		return;
@@ -328,9 +330,10 @@ void LLHlsSession::OnMessageReceived(const std::any &message)
 	if (_origin_mode == false && file_type != RequestType::Playlist && file_type != RequestType::Chunklist)
 	{
 		// All requests except playlist have a stream key
-		if (stream_key != llhls_stream->GetStreamKey())
+		const auto &expected_key = llhls_stream->GetStreamKey();
+		if (stream_key != std::string_view(expected_key.CStr(), expected_key.GetLength()))
 		{
-			logtw("LLHlsSession::OnMessageReceived(%u) - Invalid stream key : %s (expected : %s)", GetId(), stream_key.CStr(), llhls_stream->GetStreamKey().CStr());
+			logtw("LLHlsSession::OnMessageReceived(%u) - Invalid stream key : %.*s (expected : %s)", GetId(), static_cast<int>(stream_key.size()), stream_key.data(), expected_key.CStr());
 			response->SetStatusCode(http::StatusCode::NotFound);
 			ResponseData(exchange);
 			return;
@@ -439,104 +442,111 @@ void LLHlsSession::OnMessageReceived(const std::any &message)
 	}
 }
 
-bool LLHlsSession::ParseFileName(const ov::String &file_name, RequestType &type, int32_t &track_id, int64_t &segment_number, int64_t &partial_number, int64_t &init_version, ov::String &stream_key) const
+bool LLHlsSession::ParseFileName(const ov::String &file_name, RequestType &type, int32_t &track_id, int64_t &segment_number, int64_t &partial_number, int64_t &init_version, std::string_view &stream_key)
 {
 	// Negative means the version-less initial initialization segment
 	init_version = -1;
 
-	// Split to filename.ext
-	auto name_ext_items = file_name.Split(".");
-	if (name_ext_items.size() < 2 || (name_ext_items[1] != "m4s" && name_ext_items[1] != "m3u8" && name_ext_items[1] != "vtt"))
+	std::string_view full(file_name.CStr(), file_name.GetLength());
+	auto dot_pos = full.find('.');
+	if (dot_pos == std::string_view::npos)
 	{
-		logtw("Invalid file name requested: %s", file_name.CStr());
 		return false;
 	}
 
-	auto name_items = name_ext_items[0].Split("_");
-	if (name_ext_items[1] == "m3u8" && name_items[0] != "chunklist")
+	// <name>.<ext>; text after a second dot is ignored
+	std::string_view base = full.substr(0, dot_pos);
+	std::string_view ext = full.substr(dot_pos + 1);
+	ext = ext.substr(0, ext.find('.'));
+
+	if (ext != "m4s" && ext != "m3u8" && ext != "vtt")
 	{
-		// *.m3u8 and NOT chunklist*.m3u8
+		return false;
+	}
+
+	std::string_view tokens[8];
+	size_t token_count = 0;
+	size_t start = 0;
+	while (token_count < 8)
+	{
+		auto pos = base.find('_', start);
+		if (pos == std::string_view::npos)
+		{
+			tokens[token_count++] = base.substr(start);
+			break;
+		}
+		tokens[token_count++] = base.substr(start, pos - start);
+		start = pos + 1;
+	}
+
+	// Accepts a leading '+', which from_chars rejects; "+-1" stays invalid
+	auto parse_number = [](std::string_view sv, auto &val) {
+		if (sv.size() > 1 && sv[0] == '+' && sv[1] != '-')
+		{
+			sv.remove_prefix(1);
+		}
+		const auto result = std::from_chars(sv.data(), sv.data() + sv.size(), val);
+		return result.ec == std::errc{} && result.ptr == sv.data() + sv.size();
+	};
+
+	// *.m3u8 and NOT chunklist*.m3u8
+	if (ext == "m3u8" && tokens[0] != "chunklist")
+	{
 		type = RequestType::Playlist;
+		return true;
 	}
-	else if (name_items[0] == "chunklist")
+
+	// Every other name has at least 5 tokens, with the track id second
+	if (token_count < 5 || !parse_number(tokens[1], track_id))
 	{
-		// chunklist_<track id>_<media type>_<stream_key>_llhls.m3u8?session_key=<key>&_HLS_msn=<M>&_HLS_part=<N>&_HLS_skip=YES|v2&_HLS_legacy=YES
-		if (name_items.size() < 5 || name_ext_items[1] != "m3u8")
-		{
-			logtw("Invalid chunklist file name requested: %s", file_name.CStr());
-			return false;
-		}
-
-		type = RequestType::Chunklist;
-		track_id = ov::Converter::ToInt32(name_items[1].CStr());
-	}
-	else if (name_items[0] == "init")
-	{
-		// init_<track id>_<media type>_<stream key>_llhls
-		// init_<track id>_<media type>_<stream key>_v<track version>_llhls (after a track change)
-		if (name_items.size() < 5 || name_ext_items[1] != "m4s")
-		{
-			logtw("Invalid file name requested: %s", file_name.CStr());
-			return false;
-		}
-
-		type = RequestType::InitializationSegment;
-		track_id = ov::Converter::ToInt32(name_items[1].CStr());
-		stream_key = name_items[3];
-
-		if (name_items.size() >= 6 && name_items[4].HasPrefix('v') == true)
-		{
-			auto version_token = name_items[4].Substring(1);
-			if (version_token.IsEmpty() == true || version_token.IsNumeric() == false)
-			{
-				logtw("Invalid file name requested: %s", file_name.CStr());
-				return false;
-			}
-
-			init_version = ov::Converter::ToInt64(version_token.CStr());
-			if (init_version < 0 || init_version > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
-			{
-				logtw("Invalid file name requested: %s", file_name.CStr());
-				return false;
-			}
-		}
-	}
-	else if (name_items[0] == "seg" && (name_ext_items[1] == "m4s" || name_ext_items[1] == "vtt"))
-	{
-		// seg_<track id>_<segment number>_<media type>_<stream key>_llhls
-		if (name_items.size() < 6)
-		{
-			logtw("Invalid file name requested: %s", file_name.CStr());
-			return false;
-		}
-
-		type = RequestType::Segment;
-		track_id = ov::Converter::ToInt32(name_items[1].CStr());
-		segment_number = ov::Converter::ToInt64(name_items[2].CStr());
-		stream_key = name_items[4];
-	}
-	else if (name_items[0] == "part" && (name_ext_items[1] == "m4s" || name_ext_items[1] == "vtt"))
-	{
-		// part_<track id>_<segment number>_<partial number>_<media type>_<stream key>_llhls
-		if (name_items.size() < 7)
-		{
-			logtw("Invalid file name requested: %s", file_name.CStr());
-			return false;
-		}
-
-		type = RequestType::PartialSegment;
-		track_id = ov::Converter::ToInt32(name_items[1].CStr());
-		segment_number = ov::Converter::ToInt64(name_items[2].CStr());
-		partial_number = ov::Converter::ToInt64(name_items[3].CStr());
-		stream_key = name_items[5];
-	}
-	else
-	{
-		logtw("Invalid file name requested: %s", file_name.CStr());
 		return false;
 	}
 
-	return true;
+	// chunklist_<track id>_<media type>_<stream_key>_llhls.m3u8?session_key=<key>&_HLS_msn=<M>&_HLS_part=<N>&_HLS_skip=YES|v2&_HLS_legacy=YES
+	if (ext == "m3u8")
+	{
+		type = RequestType::Chunklist;
+		return true;
+	}
+
+	// init_<track id>_<media type>_<stream key>_llhls
+	// init_<track id>_<media type>_<stream key>_v<track version>_llhls (after a track change)
+	if (tokens[0] == "init" && ext == "m4s")
+	{
+		type = RequestType::InitializationSegment;
+		stream_key = tokens[3];
+
+		if (token_count >= 6 && !tokens[4].empty() && tokens[4][0] == 'v')
+		{
+			const auto version_token = tokens[4].substr(1);
+			uint32_t version;
+			const auto result = std::from_chars(version_token.data(), version_token.data() + version_token.size(), version);
+			if (result.ec != std::errc{} || result.ptr != version_token.data() + version_token.size())
+			{
+				return false;
+			}
+			init_version = version;
+		}
+		return true;
+	}
+
+	// seg_<track id>_<segment number>_<media type>_<stream key>_llhls
+	if (tokens[0] == "seg" && token_count >= 6)
+	{
+		type = RequestType::Segment;
+		stream_key = tokens[4];
+		return parse_number(tokens[2], segment_number);
+	}
+
+	// part_<track id>_<segment number>_<partial number>_<media type>_<stream key>_llhls
+	if (tokens[0] == "part" && token_count >= 7)
+	{
+		type = RequestType::PartialSegment;
+		stream_key = tokens[5];
+		return parse_number(tokens[2], segment_number) && parse_number(tokens[3], partial_number);
+	}
+
+	return false;
 }
 
 void LLHlsSession::ResponsePlaylist(const std::shared_ptr<http::svr::HttpExchange> &exchange, const ov::String &file_name, bool legacy, bool rewind, bool holdIfAccepted /*= true*/)
@@ -1014,11 +1024,10 @@ bool LLHlsSession::AddPendingRequest(const std::shared_ptr<http::svr::HttpExchan
 
 ov::String LLHlsSession::MakeQueryStringToPropagate(const std::shared_ptr<ov::Url> &request_uri)
 {
-	auto query_string = ov::String::FormatString("session=%s", _session_value.CStr());
-	if (_origin_mode == true)
+	ov::String query_string;
+	if (_origin_mode == false)
 	{
-		// Origin mode doesn't need session key
-		query_string.Clear();
+		query_string = ov::String::FormatString("session=%s", _session_value.CStr());
 	}
 
 	// stream_key is propagated to the child resources

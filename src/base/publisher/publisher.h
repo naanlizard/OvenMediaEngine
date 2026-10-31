@@ -140,6 +140,7 @@ namespace pub
 		virtual bool OnDeletePublisherApplication(const std::shared_ptr<pub::Application> &application) = 0;
 
 		bool IsAccessControlEnabled(const std::shared_ptr<const ov::Url> &request_url);
+		bool IsAccessControlEnabled(const ov::String &vhost_name);
 
 		// SignedPolicy is an official feature
 		std::tuple<AccessController::VerificationResult, std::shared_ptr<const SignedPolicy>> VerifyBySignedPolicy(const info::Host &host_info, const std::shared_ptr<const ac::RequestInfo> &request_info);

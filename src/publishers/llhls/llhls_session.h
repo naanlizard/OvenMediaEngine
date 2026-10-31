@@ -13,6 +13,7 @@
 #include <chrono>
 #include <list>
 #include <optional>
+#include <string_view>
 
 #include <modules/access_control/access_controller.h>
 
@@ -73,6 +74,8 @@ public:
 	void CountAsViewer();
 
 private:
+	// Unit-test access to ParseFileName() (see llhls_session_test.cpp)
+	friend class LLHlsFileName;
 
 	enum class RequestType : uint8_t
 	{
@@ -83,7 +86,7 @@ private:
 		PartialSegment,
 	};
 
-	bool ParseFileName(const ov::String &file_name, RequestType &type, int32_t &track_id, int64_t &segment_number, int64_t &partial_number, int64_t &init_version, ov::String &stream_key) const;
+	static bool ParseFileName(const ov::String &file_name, RequestType &type, int32_t &track_id, int64_t &segment_number, int64_t &partial_number, int64_t &init_version, std::string_view &stream_key);
 
 	void ResponsePlaylist(const std::shared_ptr<http::svr::HttpExchange> &exchange, const ov::String &file_name, bool legacy, bool rewind, bool holdIfAccepted = true);
 	void ResponseChunklist(const std::shared_ptr<http::svr::HttpExchange> &exchange, const ov::String &file_name, const int32_t &track_id, int64_t msn, int64_t part, bool skip, bool legacy, bool rewind, bool holdIfAccepted = true);

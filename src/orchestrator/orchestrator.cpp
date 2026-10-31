@@ -583,8 +583,8 @@ namespace ocst
 	{
 		if (domain_name.IsEmpty() == false)
 		{
-			auto vhost_list = GetVirtualHostList();
-			for (auto &vhost : vhost_list)
+			std::shared_lock<std::shared_mutex> lock(_virtual_host_mutex);
+			for (const auto &vhost : _virtual_host_list)
 			{
 				if (vhost->ValidateDomain(domain_name) == true)
 				{
