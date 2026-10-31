@@ -13,6 +13,7 @@
 
 #include "../transcoder_private.h"
 #include "../transcoder_stream_internal.h"
+#include "../transcoder_thumbnail_stat.h"
 
 bool FilterVideoBase::InitializeFpsFilter()
 {
@@ -93,6 +94,8 @@ FilterResult FilterVideoBase::PopCompletedFrameInternal()
 #if _SKIP_FRAMES_ENABLED
 		_skip_frames_controller.DiscardPending();
 #endif
+		_pending_thumbstat_wall_us = 0;
+		_pending_thumbstat_cpu_us  = 0;
 
 		return FilterResult::Error("The filter is in the error state");
 	}
@@ -100,6 +103,9 @@ FilterResult FilterVideoBase::PopCompletedFrameInternal()
 #if _SKIP_FRAMES_ENABLED
 	auto start_time = std::chrono::steady_clock::now();
 #endif
+
+	// A frame's transform can span several poll calls, so the time accumulates until it completes
+	ThumbStatTimer thumb_stat(cmn::IsImageCodec(GetOutputTrack()->GetCodecId()) && ::ov_log_get_enabled("ThumbStat", OVLogLevelDebug));
 
 	while (true)
 	{
@@ -109,6 +115,12 @@ FilterResult FilterVideoBase::PopCompletedFrameInternal()
 #if _SKIP_FRAMES_ENABLED
 			_skip_frames_controller.CommitFrame(ov::Clock::GetElapsedMicroSecondsFromNow(start_time));
 #endif
+			auto transform_us	  = _pending_thumbstat_wall_us + thumb_stat.WallElapsedUs();
+			auto transform_cpu_us = _pending_thumbstat_cpu_us + thumb_stat.CpuElapsedUs();
+			_pending_thumbstat_wall_us = 0;
+			_pending_thumbstat_cpu_us  = 0;
+
+			thumb_stat.Emit("transform impl=lavfi_rescaler", GetOutputTrack()->GetCodecId(), GetOutputTrack()->GetVariantName(), transform_us, transform_cpu_us);
 
 			return FilterResult::Ready(std::move(completed_frame));
 		}
@@ -118,6 +130,8 @@ FilterResult FilterVideoBase::PopCompletedFrameInternal()
 #if _SKIP_FRAMES_ENABLED
 			_skip_frames_controller.DiscardPending();
 #endif
+			_pending_thumbstat_wall_us = 0;
+			_pending_thumbstat_cpu_us  = 0;
 
 			return FilterResult::Error("The backend rescaler has failed");
 		}
@@ -132,6 +146,8 @@ FilterResult FilterVideoBase::PopCompletedFrameInternal()
 			// Update skip frames based on the current processing time and framerate.
 			UpdateSkipFrames();
 #endif
+			_pending_thumbstat_wall_us += thumb_stat.WallElapsedUs();
+			_pending_thumbstat_cpu_us += thumb_stat.CpuElapsedUs();
 
 			return FilterResult::NoOutput();
 		}

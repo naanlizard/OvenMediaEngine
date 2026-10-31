@@ -45,4 +45,8 @@ protected:
 
 	void UpdateSkipFrames();
 #endif
+
+	// THUMBSTAT time of the in-flight frame's transform from earlier poll calls
+	int64_t _pending_thumbstat_wall_us = 0;
+	int64_t _pending_thumbstat_cpu_us = 0;
 };

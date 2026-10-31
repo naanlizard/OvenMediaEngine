@@ -18,6 +18,7 @@
 #include "transcoder_gpu.h"
 #include "transcoder_modules.h"
 #include "transcoder_private.h"
+#include "transcoder_thumbnail_stat.h"
 
 
 
@@ -641,6 +642,18 @@ void TranscodeEncoder::ThreadLoop()
 			ArmKeyframeGridRestore();
 		}
 
+		auto codec_id = GetCodecID();
+		ThumbStatTimer thumb_stat(cmn::IsImageCodec(codec_id) && ::ov_log_get_enabled("ThumbStat", OVLogLevelDebug));
+
+		// Handing packets on runs the stream's delivery, which is not encode time
+		int64_t delivery_wall_us = 0, delivery_cpu_us = 0;
+		auto deliver = [&](TranscodeResult result, auto packet) {
+			ThumbStatTimer delivery(thumb_stat.IsEnabled());
+			Complete(result, std::move(packet));
+			delivery_wall_us += delivery.WallElapsedUs();
+			delivery_cpu_us += delivery.CpuElapsedUs();
+		};
+
 		// Send the frame to the encoder (force-keyframe decision is FFmpeg-free, made here).
 		bool force_keyframe = ComputeForceKeyframe(media_frame);
 
@@ -651,7 +664,7 @@ void TranscodeEncoder::ThreadLoop()
 		auto sent = SendFrame(media_frame, force_keyframe);
 		if (sent.result == TranscodeResult::DataReady)
 		{
-			Complete(sent.result, std::move(sent.packet));
+			deliver(sent.result, std::move(sent.packet));
 		}
 		else if (sent.result == TranscodeResult::DataError)
 		{
@@ -676,12 +689,12 @@ void TranscodeEncoder::ThreadLoop()
 				logte("Error occurred while receiving a packet for encoding. frame_pts(%" PRId64 "), reason(%s)", media_frame->GetPts(), recv.error.CStr());
 
 				// Report the error so the stream can account for it, then stop draining.
-				Complete(recv.result, std::move(recv.packet));
+				deliver(recv.result, std::move(recv.packet));
 				break;
 			}
 			else if (recv.result == TranscodeResult::DataReady)
 			{
-				Complete(recv.result, std::move(recv.packet));
+				deliver(recv.result, std::move(recv.packet));
 
 				// Keep draining to check whether more packets are pending.
 				continue;
@@ -693,5 +706,7 @@ void TranscodeEncoder::ThreadLoop()
 				break;
 			}
 		}
+
+		thumb_stat.Emit("encode", codec_id, GetRefTrack()->GetVariantName(), thumb_stat.WallElapsedUs() - delivery_wall_us, thumb_stat.CpuElapsedUs() - delivery_cpu_us);
 	}
 }
