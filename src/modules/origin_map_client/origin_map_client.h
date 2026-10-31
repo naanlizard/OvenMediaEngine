@@ -13,8 +13,16 @@
 #include <base/ovlibrary/delay_queue.h>
 #include <hiredis/hiredis.h>
 
+#include "reconnect_backoff.h"
+
 // redis key expire time (sec)
 #define ORIGIN_MAP_STORE_KEY_EXPIRE_TIME 10
+
+// A half-open peer otherwise blocks this thread forever; the 500ms timer that re-registers streams runs on it.
+#define ORIGIN_MAP_STORE_CONNECT_TIMEOUT_MS 3000
+#define ORIGIN_MAP_STORE_COMMAND_TIMEOUT_MS 3000
+
+static_assert(ORIGIN_MAP_STORE_RECONNECT_BACKOFF_MAX_MS < ORIGIN_MAP_STORE_KEY_EXPIRE_TIME * 1000);
 
 // If Origins-Edges cluster uses OriginMapStore, app/stream must be unique in the cluster.
 class OriginMapClient
@@ -23,6 +31,7 @@ public:
 	// redis_host: redis server host (ex: 192.168.0.160:6379)
 	// redis_password: redis server password (ex: password!@#)
 	OriginMapClient(const ov::String &redis_host, const ov::String &redis_password);
+	~OriginMapClient();
 
 	// Non-blocking request to register origin host
 	bool RequestRegister(const ov::String &app_stream_name, const ov::String &origin_host); 
@@ -38,14 +47,18 @@ private:
 	bool Update(const ov::String &app_stream_name, const ov::String &origin_host);
 	bool Unregister(const ov::String &app_stream_name);
 
-	bool CheckConnection();
 	bool ConnectRedis();
 
 	bool NofifyStreamsAlive();
 	bool RetryRegister();
 	bool ProcessPendingUnregisters();
 
-	std::tuple<int, ov::String> CommandToRedis(const char *format, ...);
+	enum class Replay
+	{
+		Allowed,
+		Forbidden
+	};
+	std::tuple<int, ov::String> CommandToRedis(Replay replay, const char *format, ...);
 
 	bool AddOriginMap(const ov::String &app_stream_name, const ov::String &origin_host);
 	bool AddOriginMapCandidate(const ov::String &app_stream_name, const ov::String &origin_host);
@@ -63,5 +76,6 @@ private:
 	std::recursive_mutex _origin_map_mutex;
 
 	redisContext *_redis_context = nullptr;
+	OriginMapReconnectBackoff _reconnect_backoff;
 	std::mutex _redis_context_mutex;
 };
