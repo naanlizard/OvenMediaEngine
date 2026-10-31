@@ -13,6 +13,8 @@
 #include <base/ovlibrary/delay_queue.h>
 #include <hiredis/hiredis.h>
 
+#include <atomic>
+
 #include "reconnect_backoff.h"
 
 // redis key expire time (sec)
@@ -44,14 +46,16 @@ private:
 	// app_stream_name : app/stream name (ex: app/stream)
 	// origin_host : OVT provided origin host info (ex: 192.168.0.160:9000)
 	bool Register(const ov::String &app_stream_name, const ov::String &origin_host);
-	bool Update(const ov::String &app_stream_name, const ov::String &origin_host);
-	bool Unregister(const ov::String &app_stream_name);
+	// taken: set when another origin holds the key
+	bool Update(const ov::String &app_stream_name, const ov::String &origin_host, bool *taken = nullptr);
+	bool Unregister(const ov::String &app_stream_name, const ov::String &origin_host);
 
 	bool ConnectRedis();
+	struct timeval TimeoutWithin(int timeout_ms) const;
 
 	bool NofifyStreamsAlive();
 	bool RetryRegister();
-	bool ProcessPendingUnregisters();
+	bool ProcessRequests();
 
 	enum class Replay
 	{
@@ -60,8 +64,13 @@ private:
 	};
 	std::tuple<int, ov::String> CommandToRedis(Replay replay, const char *format, ...);
 
-	bool AddOriginMap(const ov::String &app_stream_name, const ov::String &origin_host);
-	bool AddOriginMapCandidate(const ov::String &app_stream_name, const ov::String &origin_host);
+	struct Request
+	{
+		ov::String key;
+		ov::String origin;
+		bool remove;
+		uint64_t sequence;
+	};
 
 	ov::String _redis_ip;
 	uint16_t _redis_port;
@@ -69,13 +78,20 @@ private:
 
 	ov::DelayQueue _update_timer{"OMapC"};
 
+	// Only the timer accesses these maps until the destructor joins it.
 	std::map<ov::String, ov::String> _origin_map;
 	std::map<ov::String, ov::String> _origin_map_candidates;
-	std::map<ov::String, uint64_t> _session_map;
-	std::deque<std::pair<ov::String, uint64_t>> _origin_map_remove_candidates;
-	std::recursive_mutex _origin_map_mutex;
+
+	// Preserve caller order, including unregister/register pairs with the same URL.
+	std::deque<Request> _requests;
+	std::map<ov::String, ov::String> _requested_origins;
+	uint64_t _next_request_sequence = 0;
+	std::mutex _requests_mutex;
+	std::atomic<bool> _stopping{false};
 
 	redisContext *_redis_context = nullptr;
+	// Set for the destructor's cleanup: socket timeouts are cut to end by then
+	std::chrono::steady_clock::time_point _deadline{};
 	OriginMapReconnectBackoff _reconnect_backoff;
 	std::mutex _redis_context_mutex;
 };

@@ -71,8 +71,16 @@ namespace
 	public:
 		// Returns the raw reply, or nullopt to close the connection without replying.
 		using Handler = std::function<std::optional<std::string>(int connection, int index, const std::string &name)>;
+		using DetailedHandler = std::function<std::optional<std::string>(int connection, int index, const std::vector<std::string> &args)>;
 
 		explicit FakeRedis(Handler handler)
+			: FakeRedis(DetailedHandler([handler](int connection, int index, const std::vector<std::string> &args) {
+				return handler(connection, index, args[0]);
+			}))
+		{
+		}
+
+		explicit FakeRedis(DetailedHandler handler)
 			: _handler(std::move(handler))
 		{
 			_listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -169,7 +177,7 @@ namespace
 						_commands.push_back(std::to_string(connection) + ":" + args[0]);
 					}
 
-					auto reply = _handler(connection, index++, args[0]);
+					auto reply = _handler(connection, index++, args);
 					if (reply.has_value() == false)
 					{
 						return;
@@ -225,7 +233,7 @@ namespace
 			return (args.empty() == false);
 		}
 
-		Handler _handler;
+		DetailedHandler _handler;
 		int _listen_fd = -1;
 		uint16_t _port = 0;
 		std::atomic<bool> _stop{false};
@@ -419,51 +427,83 @@ TEST(OriginMapClient, FailedReconnectAfterDroppedConnectionOpensBackoff)
 	EXPECT_EQ(redis.Commands(), (std::vector<std::string>{"0:AUTH", "0:GET", "0:GET", "1:AUTH"}));
 }
 
-TEST(OriginMapClient, UnregisterDoesNotResendADelWhoseReplyWasLost)
+TEST(OriginMapClient, UnregisterDoesNotReplayADeleteWhoseReplyWasLost)
 {
 	std::promise<void> registered;
-	std::promise<void> first_del;
 	auto registered_received = registered.get_future();
-	auto first_del_received = first_del.get_future();
+	std::promise<void> first_delete;
+	auto delete_received = first_delete.get_future();
 
-	FakeRedis redis([&registered, &first_del, sets = 0, dels = 0](int, int, const std::string &name) mutable -> std::optional<std::string> {
-		if (name == "SET")
+	std::atomic<int> deletes{0};
+	FakeRedis redis(FakeRedis::DetailedHandler([&, refreshes = 0](int, int, const std::vector<std::string> &args) mutable -> std::optional<std::string> {
+		if (args[0] == "EVAL")
 		{
-			if (sets++ == 0)
+			if (args.size() == 6)
 			{
-				registered.set_value();
+				if (refreshes++ == 0)
+				{
+					registered.set_value();
+				}
+				return ":1\r\n";
 			}
-			return kOk;
-		}
-
-		if (name == "DEL")
-		{
-			if (dels++ == 0)
+			if (deletes++ == 0)
 			{
-				first_del.set_value();
-				return std::nullopt;
+				first_delete.set_value();
 			}
-			return ":1\r\n";
+			return std::nullopt;
 		}
-
 		return kNil;
-	});
+	}));
 	OriginMapClient client(redis.Host(), "");
-
 	client.RequestRegister("app/stream", "ovt://origin-a:9000/app/stream");
 	ASSERT_EQ(registered_received.wait_for(5s), std::future_status::ready);
 	client.RequestUnregister("app/stream");
-	ASSERT_EQ(first_del_received.wait_for(5s), std::future_status::ready);
+	ASSERT_EQ(delete_received.wait_for(5s), std::future_status::ready);
 
 	// The lost reply opens the backoff window, so this sends nothing
 	ov::String origin;
 	EXPECT_EQ(client.GetOrigin("app/stream", origin), CommonErrorCode::ERROR);
-
-	auto commands = redis.Commands();
-	auto del = std::find(commands.begin(), commands.end(), "0:DEL");
-	ASSERT_NE(del, commands.end());
-	EXPECT_EQ(std::vector<std::string>(del, commands.end()), (std::vector<std::string>{"0:DEL"}));
+	EXPECT_EQ(deletes.load(), 1);
+	EXPECT_EQ(redis.Commands().back(), "0:EVAL");
 	EXPECT_EQ(redis.Connections(), 1);
+}
+
+TEST(OriginMapClient, UnregisterDuringRegistrationDoesNotLeaveAZombieOwner)
+{
+	std::promise<void> registering;
+	std::promise<void> proceed;
+	std::promise<void> removed;
+	auto registering_received = registering.get_future();
+	auto proceed_received = proceed.get_future();
+	auto removed_received = removed.get_future();
+	std::atomic<int> refreshes{0};
+	FakeRedis redis(FakeRedis::DetailedHandler([&](int, int, const std::vector<std::string> &args) -> std::optional<std::string> {
+		if (args[0] == "EVAL" && args.size() == 6)
+		{
+			if (refreshes++ == 0)
+			{
+				registering.set_value();
+				proceed_received.wait_for(5s);
+			}
+			return ":1\r\n";
+		}
+		if (args[0] == "EVAL")
+		{
+			EXPECT_EQ(args[4], "ovt://origin-a:9000/app/stream");
+			removed.set_value();
+			return ":1\r\n";
+		}
+		return kNil;
+	}));
+	OriginMapClient client(redis.Host(), "");
+	client.RequestRegister("app/stream", "ovt://origin-a:9000/app/stream");
+	ASSERT_EQ(registering_received.wait_for(5s), std::future_status::ready);
+	client.RequestUnregister("app/stream");
+	proceed.set_value();
+	ASSERT_EQ(removed_received.wait_for(5s), std::future_status::ready);
+	auto after_removal = refreshes.load();
+	std::this_thread::sleep_for(1100ms);
+	EXPECT_EQ(refreshes.load(), after_removal);
 }
 
 TEST(OriginMapClient, LogsOneErrorLinePerBackoffWindow)
@@ -482,4 +522,259 @@ TEST(OriginMapClient, LogsOneErrorLinePerBackoffWindow)
 	EXPECT_EQ(CountClientErrorLines(output), 1) << output;
 	EXPECT_NE(output.find("next attempt in 1000 ms"), std::string::npos) << output;
 	EXPECT_EQ(redis.Connections(), 1);
+}
+
+TEST(OriginMapClient, DestructorReleasesARegistrationWhoseReplyWasLost)
+{
+	std::promise<void> applied;
+	auto applied_received = applied.get_future();
+	std::atomic<int> removals{0};
+	FakeRedis redis(FakeRedis::DetailedHandler([&](int, int, const std::vector<std::string> &args) -> std::optional<std::string> {
+		if (args[0] == "EVAL" && args.size() == 6)
+		{
+			applied.set_value();
+			return std::nullopt;
+		}
+		if (args[0] == "EVAL")
+		{
+			EXPECT_EQ(args[3], "app/stream");
+			EXPECT_EQ(args[4], "ovt://origin-a:9000/app/stream");
+			++removals;
+			return ":1\r\n";
+		}
+		return kNil;
+	}));
+	{
+		OriginMapClient client(redis.Host(), "");
+		client.RequestRegister("app/stream", "ovt://origin-a:9000/app/stream");
+		ASSERT_EQ(applied_received.wait_for(5s), std::future_status::ready);
+	}
+	EXPECT_EQ(removals.load(), 1);
+	EXPECT_EQ(redis.Commands(), (std::vector<std::string>{"0:EVAL", "1:EVAL"}));
+}
+
+TEST(OriginMapClient, ReregisterBeforeQueuedUnregisterRunsKeepsTheEntry)
+{
+	std::promise<void> refreshing;
+	std::promise<void> proceed;
+	auto refreshing_received = refreshing.get_future();
+	auto proceed_received = proceed.get_future();
+	std::atomic<int> refreshes{0};
+	std::atomic<int> removals{0};
+	FakeRedis redis(FakeRedis::DetailedHandler([&](int, int, const std::vector<std::string> &args) -> std::optional<std::string> {
+		if (args[0] == "EVAL" && args.size() == 6)
+		{
+			// The first keepalive holds the timer while both requests are queued
+			if (refreshes++ == 1)
+			{
+				refreshing.set_value();
+				proceed_received.wait_for(5s);
+			}
+			return ":1\r\n";
+		}
+		if (args[0] == "EVAL")
+		{
+			++removals;
+			return ":1\r\n";
+		}
+		return kNil;
+	}));
+	OriginMapClient client(redis.Host(), "");
+	client.RequestRegister("app/stream", "ovt://origin-a:9000/app/stream");
+	ASSERT_EQ(refreshing_received.wait_for(5s), std::future_status::ready);
+	client.RequestUnregister("app/stream");
+	client.RequestRegister("app/stream", "ovt://origin-a:9000/app/stream");
+	proceed.set_value();
+	auto resumed = refreshes.load();
+	std::this_thread::sleep_for(1100ms);
+	EXPECT_EQ(removals.load(), 0);
+	EXPECT_GT(refreshes.load(), resumed);
+}
+
+TEST(OriginMapClient, RequestsQueuedDuringAPassWaitForTheRefresh)
+{
+	std::mutex events_mutex;
+	std::vector<std::string> events;
+	std::promise<void> refreshed, first_delete, proceed, second_delete;
+	auto refreshed_received = refreshed.get_future();
+	auto first_delete_received = first_delete.get_future();
+	auto proceed_received = proceed.get_future().share();
+	auto second_delete_received = second_delete.get_future();
+	std::atomic<int> refreshes{0}, deletes{0};
+
+	FakeRedis redis(FakeRedis::DetailedHandler([&](int, int, const std::vector<std::string> &args) -> std::optional<std::string> {
+		if (args[0] != "EVAL")
+		{
+			return kNil;
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(events_mutex);
+			events.push_back(((args.size() == 6) ? "refresh:" : "delete:") + args[3]);
+		}
+
+		if (args.size() == 6)
+		{
+			if ((args[3] == "app/a") && (refreshes++ == 0))
+			{
+				refreshed.set_value();
+			}
+			return ":1\r\n";
+		}
+
+		auto index = deletes++;
+		if (index == 0)
+		{
+			first_delete.set_value();
+			proceed_received.wait_for(5s);
+		}
+		else if (index == 1)
+		{
+			second_delete.set_value();
+		}
+		return ":1\r\n";
+	}));
+	OriginMapClient client(redis.Host(), "");
+
+	client.RequestRegister("app/a", "ovt://origin-a:9000/app/a");
+	ASSERT_EQ(refreshed_received.wait_for(5s), std::future_status::ready);
+
+	client.RequestRegister("app/b", "ovt://origin-a:9000/app/b");
+	client.RequestUnregister("app/b");
+	ASSERT_EQ(first_delete_received.wait_for(5s), std::future_status::ready);
+
+	// Queued while the pass is busy with the first delete
+	client.RequestRegister("app/c", "ovt://origin-a:9000/app/c");
+	client.RequestUnregister("app/c");
+	proceed.set_value();
+	ASSERT_EQ(second_delete_received.wait_for(5s), std::future_status::ready);
+
+	std::lock_guard<std::mutex> lock(events_mutex);
+	auto first = std::find(events.begin(), events.end(), "delete:app/b");
+	auto second = std::find(events.begin(), events.end(), "delete:app/c");
+	ASSERT_NE(first, events.end());
+	ASSERT_NE(second, events.end());
+	EXPECT_NE(std::find(first, second, "refresh:app/a"), second);
+}
+
+TEST(OriginMapClient, NewUrlForAKeyRetiresTheOldOne)
+{
+	const std::string old_origin = "ovt://origin-a:9000/app/stream";
+	std::promise<void> owned, retired;
+	auto owned_received = owned.get_future();
+	auto retired_received = retired.get_future();
+	std::atomic<int> old_refreshes{0};
+	std::atomic<bool> old_deleted{false};
+
+	FakeRedis redis(FakeRedis::DetailedHandler([&](int, int, const std::vector<std::string> &args) -> std::optional<std::string> {
+		if (args[0] != "EVAL")
+		{
+			return kNil;
+		}
+
+		if ((args.size() == 6) && (args[4] == old_origin) && (old_refreshes++ == 0))
+		{
+			owned.set_value();
+		}
+		else if ((args.size() == 5) && (args[4] == old_origin) && (old_deleted.exchange(true) == false))
+		{
+			retired.set_value();
+		}
+		return ":1\r\n";
+	}));
+	OriginMapClient client(redis.Host(), "");
+
+	client.RequestRegister("app/stream", old_origin.c_str());
+	ASSERT_EQ(owned_received.wait_for(5s), std::future_status::ready);
+
+	client.RequestRegister("app/stream", "ovt://origin-b:9000/app/stream");
+	client.RequestUnregister("app/stream");
+	ASSERT_EQ(retired_received.wait_for(5s), std::future_status::ready);
+
+	auto after_retire = old_refreshes.load();
+	std::this_thread::sleep_for(1100ms);
+	EXPECT_EQ(old_refreshes.load(), after_retire);
+}
+
+TEST(OriginMapClient, NewUrlRetiresARegistrationWhoseReplyWasLost)
+{
+	const std::string old_origin = "ovt://origin-a:9000/app/stream";
+	std::promise<void> retried, retired;
+	auto retried_received = retried.get_future();
+	auto retired_received = retired.get_future();
+	std::atomic<int> old_attempts{0};
+	std::atomic<bool> old_deleted{false};
+
+	FakeRedis redis(FakeRedis::DetailedHandler([&](int, int, const std::vector<std::string> &args) -> std::optional<std::string> {
+		if (args[0] != "EVAL")
+		{
+			return kNil;
+		}
+
+		if ((args.size() == 6) && (args[4] == old_origin))
+		{
+			auto attempt = old_attempts++;
+			if (attempt == 0)
+			{
+				// Applied, but the reply is lost
+				return std::nullopt;
+			}
+			if (attempt == 1)
+			{
+				retried.set_value();
+			}
+			return ":0\r\n";
+		}
+
+		if ((args.size() == 5) && (args[4] == old_origin) && (old_deleted.exchange(true) == false))
+		{
+			retired.set_value();
+		}
+		return ":1\r\n";
+	}));
+	OriginMapClient client(redis.Host(), "");
+
+	client.RequestRegister("app/stream", old_origin.c_str());
+	ASSERT_EQ(retried_received.wait_for(5s), std::future_status::ready);
+
+	client.RequestRegister("app/stream", "ovt://origin-b:9000/app/stream");
+	EXPECT_EQ(retired_received.wait_for(5s), std::future_status::ready);
+}
+
+TEST(OriginMapClient, DestructorCleanupEndsWithinItsBudget)
+{
+	std::promise<void> registered;
+	auto registered_received = registered.get_future();
+	std::atomic<int> refreshes{0};
+
+	FakeRedis redis(FakeRedis::DetailedHandler([&](int, int, const std::vector<std::string> &args) -> std::optional<std::string> {
+		if (args[0] != "EVAL")
+		{
+			return kNil;
+		}
+
+		if (args.size() == 6)
+		{
+			if (++refreshes == 3)
+			{
+				registered.set_value();
+			}
+			return ":1\r\n";
+		}
+
+		// Each delete answers just inside the command timeout
+		std::this_thread::sleep_for(2500ms);
+		return ":1\r\n";
+	}));
+	auto client = std::make_unique<OriginMapClient>(redis.Host(), "");
+
+	for (const char *name : {"app/a", "app/b", "app/c"})
+	{
+		client->RequestRegister(name, ov::String::FormatString("ovt://origin-a:9000/%s", name));
+	}
+	ASSERT_EQ(registered_received.wait_for(5s), std::future_status::ready);
+
+	auto started = std::chrono::steady_clock::now();
+	client.reset();
+	EXPECT_LT(std::chrono::steady_clock::now() - started, 4s);
 }

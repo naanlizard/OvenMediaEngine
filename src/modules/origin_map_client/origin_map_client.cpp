@@ -9,12 +9,26 @@
 
 #include "origin_map_client.h"
 
+#include <algorithm>
+#include <iterator>
+#include <set>
+
 #define OV_LOG_TAG "OriginMapClient"
 
 namespace
 {
 	constexpr const char *kConnectFailedReply = "Failed to connect redis server";
 	constexpr const char *kBackingOffReply = "Waiting to reconnect to redis server";
+
+	// The stored OVT URL is the ownership identity. An absent key can be restored
+	// after Redis recovery, but an origin that took over must never be overwritten.
+	constexpr const char *kRefreshOrigin =
+		"local owner = redis.call('GET', KEYS[1]); "
+		"if not owner or owner == ARGV[1] then "
+		"redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2]); return 1; end; return 0";
+	constexpr const char *kRemoveOrigin =
+		"if redis.call('GET', KEYS[1]) == ARGV[1] then "
+		"return redis.call('DEL', KEYS[1]); end; return 0";
 
 	bool IsUnreachableReply(int reply_type, const ov::String &reply_str)
 	{
@@ -41,9 +55,9 @@ OriginMapClient::OriginMapClient(const ov::String &redis_host, const ov::String 
 
 	_update_timer.Push(
 		[this](void *paramter) -> ov::DelayQueueAction {
+			ProcessRequests();
 			RetryRegister();
 			NofifyStreamsAlive();
-			ProcessPendingUnregisters();
 			return ov::DelayQueueAction::Repeat;
 		},
 		500);
@@ -52,9 +66,44 @@ OriginMapClient::OriginMapClient(const ov::String &redis_host, const ov::String 
 
 OriginMapClient::~OriginMapClient()
 {
-	// Declared before the state its callback uses, so the timer would otherwise stop after that state is gone
+	// Declared before the state its callback uses, so the timer would otherwise stop after that state is gone,
+	// and a callback still running could recreate a key removed below
+	_stopping = true;
 	_update_timer.Stop();
 
+	// One attempt even inside a backoff window; the keys otherwise stay until their TTL
+	_reconnect_backoff.Reset();
+
+	std::set<std::pair<ov::String, ov::String>> removals;
+	for (const auto &entry : _origin_map)
+	{
+		removals.emplace(entry);
+	}
+	// A registration whose reply was lost may have reached Redis.
+	for (const auto &entry : _origin_map_candidates)
+	{
+		removals.emplace(entry);
+	}
+	for (const auto &request : _requests)
+	{
+		if (request.remove)
+		{
+			removals.emplace(request.key, request.origin);
+		}
+	}
+	// Bounded, as the last reference can be dropped under the orchestrator's virtual host lock
+	{
+		std::lock_guard<std::mutex> lock(_redis_context_mutex);
+		_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ORIGIN_MAP_STORE_COMMAND_TIMEOUT_MS);
+	}
+	for (const auto &[key, origin] : removals)
+	{
+		if (Unregister(key, origin) == false)
+		{
+			// The remaining keys expire with their TTL
+			break;
+		}
+	}
 	if (_redis_context != nullptr)
 	{
 		redisFree(_redis_context);
@@ -64,232 +113,165 @@ OriginMapClient::~OriginMapClient()
 
 bool OriginMapClient::NofifyStreamsAlive()
 {
-	std::unique_lock<std::recursive_mutex> lock(_origin_map_mutex);
-	auto origin_map = _origin_map;
-	lock.unlock();
-
-	for (auto &[key, value] : origin_map)
+	for (const auto &[key, value] : _origin_map)
 	{
+		if (_stopping)
+		{
+			break;
+		}
 		Update(key, value);
 	}
-
 	return true;
 }
 
 bool OriginMapClient::RetryRegister()
 {
-	decltype(_origin_map_candidates) candidates;
-
+	for (auto it = _origin_map_candidates.begin(); it != _origin_map_candidates.end();)
 	{
-		std::unique_lock<std::recursive_mutex> lock(_origin_map_mutex);
-		if (_origin_map_candidates.empty())
+		if (_stopping)
 		{
-			return true;
+			break;
 		}
-
-		candidates.swap(_origin_map_candidates);
-	}
-
-	decltype(_origin_map_candidates) failed;
-
-	for (auto &kv : candidates)
-	{
-		auto &key = kv.first;
-		auto &value = kv.second;
-
-		if (!Register(key, value))
+		if (Register(it->first, it->second))
 		{
-			failed.emplace(key, std::move(value));
-		}
-	}
-
-	if (failed.empty() == false)
-	{
-		std::unique_lock<std::recursive_mutex> lock(_origin_map_mutex);
-		for (auto &kv : failed)
-		{
-			_origin_map_candidates.try_emplace(kv.first, std::move(kv.second));
-		}
-	}
-
-	return true;
-}
-
-bool OriginMapClient::ProcessPendingUnregisters()
-{
-	decltype(_origin_map_remove_candidates) candidates;
-
-	{
-		std::unique_lock<std::recursive_mutex> lock(_origin_map_mutex);
-		if (_origin_map_remove_candidates.empty())
-		{
-			return true;
-		}
-
-		candidates.swap(_origin_map_remove_candidates);
-	}
-
-	for (auto &[app_stream_name, session_id] : candidates)
-	{
-		bool stale = true;
-		bool registered = false;
-		{
-			std::lock_guard<std::recursive_mutex> lock(_origin_map_mutex);
-			// Only unregister if the session ID matches: a different ID means the stream
-			// reconnected and RequestRegister() has already started a new session.
-			auto session_it = _session_map.find(app_stream_name);
-			if (session_it != _session_map.end() && session_it->second == session_id)
-			{
-				stale = false;
-				_origin_map_candidates.erase(app_stream_name);
-				registered = _origin_map.erase(app_stream_name) > 0;
-				_session_map.erase(session_it);
-			}
-		}
-		if (registered)
-		{
-			Unregister(app_stream_name);
-		}
-		else if (stale)
-		{
-			logti("OriginMapStore: <%s> unregister skipped (reconnected)", app_stream_name.CStr());
+			it = _origin_map_candidates.erase(it);
 		}
 		else
 		{
-			logti("OriginMapStore: <%s> unregister skipped (not registered)", app_stream_name.CStr());
+			++it;
 		}
 	}
-
 	return true;
 }
 
-bool OriginMapClient::AddOriginMap(const ov::String &app_stream_name, const ov::String &origin_host)
+bool OriginMapClient::ProcessRequests()
 {
-	std::lock_guard<std::recursive_mutex> lock(_origin_map_mutex);
-	_origin_map[app_stream_name] = origin_host;
-	return true;
-}
-
-bool OriginMapClient::AddOriginMapCandidate(const ov::String &app_stream_name, const ov::String &origin_host)
-{
-	std::lock_guard<std::recursive_mutex> lock(_origin_map_mutex);
-	_origin_map_candidates[app_stream_name] = origin_host;
-	return true;
-}
-
-bool OriginMapClient::RequestUnregister(const ov::String &app_stream_name)
-{
-	std::lock_guard<std::recursive_mutex> lock(_origin_map_mutex);
-	_origin_map_remove_candidates.push_back({app_stream_name, _session_map[app_stream_name]});
-	return true;
-}
-
-bool OriginMapClient::Register(const ov::String &app_stream_name, const ov::String &origin_host)
-{
-	bool same_registered = false;
-	
+	// Only what was queued before this pass, so requests arriving during it cannot hold off the refresh
+	uint64_t watermark = 0;
 	{
-		// Check if already registered
-		auto [reply_type, reply_str] = CommandToRedis(Replay::Allowed, "GET %s", app_stream_name.CStr());
-		if (reply_type == REDIS_REPLY_NIL)
-		{
-			// Not exist, keep going
-		}
-		else if (reply_type == REDIS_REPLY_STRING)
-		{
-			if (origin_host == reply_str)
-			{
-				// Already registered with same origin host, so no need to register again.
-				same_registered = true;
-			}
-			else
-			{
-				logte("<%s> stream is already registered with different origin host (%s)", app_stream_name.CStr(), reply_str.CStr());
-				
-				AddOriginMapCandidate(app_stream_name, origin_host);
+		std::lock_guard<std::mutex> lock(_requests_mutex);
+		watermark = _next_request_sequence;
+	}
 
-				return false;
+	while (_stopping == false)
+	{
+		Request request;
+		{
+			std::lock_guard<std::mutex> lock(_requests_mutex);
+			if (_requests.empty() || (_requests.front().sequence >= watermark))
+			{
+				break;
 			}
+			request = std::move(_requests.front());
+			_requests.pop_front();
+		}
+		if (request.remove)
+		{
+			auto candidate = _origin_map_candidates.find(request.key);
+			if (candidate != _origin_map_candidates.end() && candidate->second == request.origin)
+			{
+				_origin_map_candidates.erase(candidate);
+			}
+			auto owned = _origin_map.find(request.key);
+			if (owned != _origin_map.end() && owned->second == request.origin)
+			{
+				_origin_map.erase(owned);
+			}
+			Unregister(request.key, request.origin);
 		}
 		else
 		{
-			logte_unless_unreachable(reply_type, reply_str, "Failed to get origin host from redis : %s:%d (err(%d):%s)", _redis_ip.CStr(), _redis_port, reply_type, reply_str.CStr());
-			return false;
+			// A new URL for the key retires the one registered, or possibly registered, before; nothing would unregister it otherwise
+			auto owned = _origin_map.find(request.key);
+			if ((owned != _origin_map.end()) && (owned->second != request.origin))
+			{
+				auto previous_origin = owned->second;
+				_origin_map.erase(owned);
+				Unregister(request.key, previous_origin);
+			}
+			auto candidate = _origin_map_candidates.find(request.key);
+			if ((candidate != _origin_map_candidates.end()) && (candidate->second != request.origin))
+			{
+				auto previous_origin = candidate->second;
+				_origin_map_candidates.erase(candidate);
+				Unregister(request.key, previous_origin);
+			}
+			_origin_map_candidates[request.key] = request.origin;
 		}
 	}
-
-	if (same_registered == false)
-	{
-		// Set origin host to redis
-		// The EXPIRE option is to prevent locking the app/stream when OvenMediaEngine unexpectedly stops.
-		// So _update_timer updates the expire time once every 2.5 seconds.
-		// If it is successful, it will return REDIS_REPLY_STATUS with "OK".
-		auto [reply_type, reply_str] = CommandToRedis(Replay::Allowed, "SET %s %s EX %d NX", app_stream_name.CStr(), origin_host.CStr(), ORIGIN_MAP_STORE_KEY_EXPIRE_TIME);
-		if (reply_type == REDIS_ERR || reply_type == REDIS_REPLY_ERROR)
-		{
-			logte_unless_unreachable(reply_type, reply_str, "Failed to register origin host to redis : %s:%d/%s/%s (err(%d):%s)", _redis_ip.CStr(), _redis_port, app_stream_name.CStr(), origin_host.CStr(), reply_type, reply_str.CStr());
-			return false;
-		}
-		else if (reply_type == REDIS_REPLY_NIL)
-		{
-			logte("<%s> stream is already registered.", app_stream_name.CStr());
-			AddOriginMapCandidate(app_stream_name, origin_host);
-			return false;
-		}
-	}
-
-	AddOriginMap(app_stream_name, origin_host);
-
-	logti("OriginMapStore: <%s> stream is registered with origin host : %s", app_stream_name.CStr(), origin_host.CStr());
-
 	return true;
 }
 
 bool OriginMapClient::RequestRegister(const ov::String &app_stream_name, const ov::String &origin_host)
 {
-	std::lock_guard<std::recursive_mutex> lock(_origin_map_mutex);
-	// Increment session so any queued pending-unregister entry becomes stale and will be skipped
-	// by ProcessPendingUnregisters() when it compares session IDs.
-	_session_map[app_stream_name]++;
-	_origin_map_candidates[app_stream_name] = origin_host;
+	std::lock_guard<std::mutex> lock(_requests_mutex);
+	_requested_origins[app_stream_name] = origin_host;
+
+	// A stream back before its queued removal ran keeps its Redis entry rather than losing it until re-registration
+	auto last = std::find_if(_requests.rbegin(), _requests.rend(), [&](const Request &request) { return request.key == app_stream_name; });
+	if (last != _requests.rend() && last->remove && last->origin == origin_host)
+	{
+		_requests.erase(std::next(last).base());
+		return true;
+	}
+
+	_requests.push_back({app_stream_name, origin_host, false, _next_request_sequence++});
 	return true;
 }
 
-bool OriginMapClient::Update(const ov::String &app_stream_name, const ov::String &origin_host)
+bool OriginMapClient::RequestUnregister(const ov::String &app_stream_name)
 {
-	// Set origin host to redis
-	// XX option or EXPIRE cmd are not used because if redis server is restarted, update() can restore the origin stream info.
-	auto [reply_type, reply_str] = CommandToRedis(Replay::Allowed, "SET %s %s EX %d", app_stream_name.CStr(), origin_host.CStr(), ORIGIN_MAP_STORE_KEY_EXPIRE_TIME);
-	if (reply_type == REDIS_REPLY_STATUS && reply_str == "OK")
+	std::lock_guard<std::mutex> lock(_requests_mutex);
+	auto requested = _requested_origins.find(app_stream_name);
+	if (requested != _requested_origins.end())
 	{
-		// Updated
+		_requests.push_back({app_stream_name, requested->second, true, _next_request_sequence++});
+		_requested_origins.erase(requested);
 	}
-	else if (reply_type == REDIS_REPLY_NIL)
-	{
-		logte("Failed to update origin host to redis because the key does not exist : %s:%d (err(%d):%s)", _redis_ip.CStr(), _redis_port, reply_type, reply_str.CStr());
-		return false;
-	}
-	else
-	{
-		logte_unless_unreachable(reply_type, reply_str, "Failed to update origin host to redis : %s:%d (err(%d):%s)", _redis_ip.CStr(), _redis_port, reply_type, reply_str.CStr());
-		return false;
-	}
-
 	return true;
 }
 
-bool OriginMapClient::Unregister(const ov::String &app_stream_name)
+bool OriginMapClient::Register(const ov::String &app_stream_name, const ov::String &origin_host)
 {
-	// A replayed DEL could remove the key of an origin that registered the stream after the first DEL landed.
-	auto [reply_type, reply_str] = CommandToRedis(Replay::Forbidden, "DEL %s", app_stream_name.CStr());
-	if (reply_type == REDIS_ERR || reply_type == REDIS_REPLY_ERROR)
+	bool taken = false;
+	if (!Update(app_stream_name, origin_host, &taken))
+	{
+		if (taken)
+		{
+			logte("<%s> stream is already registered with a different origin host", app_stream_name.CStr());
+		}
+		return false;
+	}
+	_origin_map[app_stream_name] = origin_host;
+	logti("OriginMapStore: <%s> stream is registered with origin host : %s", app_stream_name.CStr(), origin_host.CStr());
+	return true;
+}
+
+bool OriginMapClient::Update(const ov::String &app_stream_name, const ov::String &origin_host, bool *taken)
+{
+	auto [reply_type, reply_str] = CommandToRedis(Replay::Allowed, "EVAL %s 1 %s %s %d", kRefreshOrigin, app_stream_name.CStr(), origin_host.CStr(), ORIGIN_MAP_STORE_KEY_EXPIRE_TIME);
+	if (reply_type == REDIS_REPLY_INTEGER)
+	{
+		if (taken != nullptr)
+		{
+			*taken = (reply_str != "1");
+		}
+		return reply_str == "1";
+	}
+	logte_unless_unreachable(reply_type, reply_str, "Failed to update origin host to redis : %s:%d (err(%d):%s)", _redis_ip.CStr(), _redis_port, reply_type, reply_str.CStr());
+	return false;
+}
+
+bool OriginMapClient::Unregister(const ov::String &app_stream_name, const ov::String &origin_host)
+{
+	// Keep deletion non-replayable: identical URLs do not distinguish generations.
+	auto [reply_type, reply_str] = CommandToRedis(Replay::Forbidden, "EVAL %s 1 %s %s", kRemoveOrigin, app_stream_name.CStr(), origin_host.CStr());
+	if (reply_type != REDIS_REPLY_INTEGER)
 	{
 		logte_unless_unreachable(reply_type, reply_str, "Failed to delete origin host from redis : %s:%d (err(%d):%s)", _redis_ip.CStr(), _redis_port, reply_type, reply_str.CStr());
 		return false;
 	}
-
 	logti("OriginMapStore: <%s> stream is unregistered.", app_stream_name.CStr());
-
 	return true;
 }
 
@@ -311,6 +293,18 @@ CommonErrorCode OriginMapClient::GetOrigin(const ov::String &app_stream_name, ov
 	return CommonErrorCode::SUCCESS;
 }
 
+struct timeval OriginMapClient::TimeoutWithin(int timeout_ms) const
+{
+	int64_t ms = timeout_ms;
+	if (_deadline != std::chrono::steady_clock::time_point{})
+	{
+		auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(_deadline - std::chrono::steady_clock::now()).count();
+		ms = std::clamp<int64_t>(remaining, 1, ms);
+	}
+
+	return { static_cast<time_t>(ms / 1000), static_cast<suseconds_t>((ms % 1000) * 1000) };
+}
+
 // Caller holds _redis_context_mutex.
 bool OriginMapClient::ConnectRedis()
 {
@@ -319,7 +313,7 @@ bool OriginMapClient::ConnectRedis()
 		return true;
 	}
 
-	struct timeval connect_timeout = { ORIGIN_MAP_STORE_CONNECT_TIMEOUT_MS / 1000, (ORIGIN_MAP_STORE_CONNECT_TIMEOUT_MS % 1000) * 1000 };
+	auto connect_timeout = TimeoutWithin(ORIGIN_MAP_STORE_CONNECT_TIMEOUT_MS);
 
 	// connect to redis server
 	_redis_context = redisConnectWithTimeout(_redis_ip.CStr(), _redis_port, connect_timeout);
@@ -338,8 +332,7 @@ bool OriginMapClient::ConnectRedis()
 		return false;
 	}
 
-	struct timeval command_timeout = { ORIGIN_MAP_STORE_COMMAND_TIMEOUT_MS / 1000, (ORIGIN_MAP_STORE_COMMAND_TIMEOUT_MS % 1000) * 1000 };
-	redisSetTimeout(_redis_context, command_timeout);
+	redisSetTimeout(_redis_context, TimeoutWithin(ORIGIN_MAP_STORE_COMMAND_TIMEOUT_MS));
 	redisEnableKeepAlive(_redis_context);
 
 	// Auth
@@ -384,9 +377,20 @@ std::tuple<int, ov::String> OriginMapClient::CommandToRedis(Replay replay, const
 
 	while ((reply == nullptr) && (attempts-- > 0))
 	{
+		bool bounded = (_deadline != std::chrono::steady_clock::time_point{});
+		if (bounded && (std::chrono::steady_clock::now() >= _deadline))
+		{
+			return { REDIS_ERR, "Out of time for redis" };
+		}
+
 		if (ConnectRedis() == false)
 		{
 			return { REDIS_ERR, kConnectFailedReply };
+		}
+
+		if (bounded)
+		{
+			redisSetTimeout(_redis_context, TimeoutWithin(ORIGIN_MAP_STORE_COMMAND_TIMEOUT_MS));
 		}
 
 		va_list args;
