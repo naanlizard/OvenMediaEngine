@@ -240,10 +240,14 @@ set(_OME_FETCH "ome_fetch()
     rm -f ome_source_archive
 }")
 
+# sudo-rs, the sudo Ubuntu 26.04 installs, refuses to run under no_new_privs even as root
+# (container builds may set it); root needs no sudo, so run the command directly.
+set(_OME_SUDO "if [ \"$(id -u)\" -eq 0 ]; then sudo() { \"$@\"; }; fi")
+
 macro(ome_run cmd label)
     message(STATUS "[OME Prerequisites] Building: ${label}")
     set(_ome_script "${TEMP_PATH}/_ome_${label}.sh")
-    file(WRITE "${_ome_script}" "#!/bin/bash\nset -e\nexport ${_COMMON_ENV}\n${_OME_FETCH}\n${cmd}\n")
+    file(WRITE "${_ome_script}" "#!/bin/bash\nset -e\nexport ${_COMMON_ENV}\n${_OME_SUDO}\n${_OME_FETCH}\n${cmd}\n")
     execute_process(
         COMMAND bash "${_ome_script}"
         RESULT_VARIABLE _ret

@@ -39,7 +39,9 @@
 ###########################################################################################################
 # Base Image Selection
 ARG     USE_GPU
-FROM    ubuntu:22.04 AS base
+FROM    ubuntu:26.04 AS base
+# nvidia/cuda ships 26.04 only with CUDA 13, whose nvcc rejects compute_60 (FFmpeg's
+# fallback --nvccflags arch), so the GPU stages stay on CUDA 12 and 22.04.
 FROM    nvidia/cuda:12.0.1-devel-ubuntu22.04 AS base_gpu
 FROM    base${USE_GPU:+_gpu} AS base_build
 
@@ -121,7 +123,8 @@ ENTRYPOINT ["tail", "-f", "/dev/null"]
 # Release Stage
 ###########################################################################################################
 ARG     USE_GPU
-FROM    ubuntu:22.04 AS release_base
+FROM    ubuntu:26.04 AS release_base
+# Must match base_gpu.
 FROM    nvidia/cuda:12.0.1-runtime-ubuntu22.04 AS release_base_gpu
 FROM    release_base${USE_GPU:+_gpu} AS release
 

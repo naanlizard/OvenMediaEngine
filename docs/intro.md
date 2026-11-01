@@ -64,7 +64,7 @@ Our goal is to make it easier for you to build a stable broadcasting/streaming s
 
 Building OvenMediaEngine requires libstdc++ 10 or newer. We test on the platforms listed below, and other Linux distributions with a comparable toolchain are likely to work as well:
 
-* Docker ([https://hub.docker.com/r/ovenmedialabs/ovenmediaengine](https://hub.docker.com/r/ovenmedialabs/ovenmediaengine)) - the official image is built on Ubuntu 22.04
+* Docker ([https://hub.docker.com/r/ovenmedialabs/ovenmediaengine](https://hub.docker.com/r/ovenmedialabs/ovenmediaengine)) - the official image is built on Ubuntu 26.04
 * Ubuntu 22.04 / 24.04 / 26.04
 * Rocky Linux 9 / AlmaLinux 9 / RHEL 9
 * Amazon Linux 2023

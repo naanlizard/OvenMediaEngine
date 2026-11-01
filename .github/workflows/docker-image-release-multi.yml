@@ -18,7 +18,7 @@ env:
 jobs:
   build_amd64:
     name: Build amd64 Image
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Notify Start (amd64)
         uses: slackapi/slack-github-action@v1.26.0
@@ -74,7 +74,7 @@ jobs:
 
   build_arm64:
     name: Build arm64 Image (${{ matrix.page_variant.name }})
-    runs-on: ubuntu-22.04-arm
+    runs-on: ubuntu-26.04-arm
     strategy:
       fail-fast: false
       matrix:
@@ -141,7 +141,7 @@ jobs:
 
   merge_manifests:
     name: Merge and Push Multi-Arch Manifest
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     needs: [build_amd64, build_arm64]
     steps:
       - name: Notify Start (Merge)

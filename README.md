@@ -68,7 +68,7 @@ OvenSpace is a sub-second latency streaming demo service using [OvenMediaEngine]
 ## Supported Platforms
 Building OvenMediaEngine requires libstdc++ 10 or newer. These are the platforms we test on; other Linux distributions with a comparable toolchain are likely to work as well:
 
-* [Docker](https://hub.docker.com/r/ovenmedialabs/ovenmediaengine) (the official image is built on Ubuntu 22.04)
+* [Docker](https://hub.docker.com/r/ovenmedialabs/ovenmediaengine) (the official image is built on Ubuntu 26.04)
 * Ubuntu 22.04 / 24.04 / 26.04
 * Rocky Linux 9 / AlmaLinux 9 / RHEL 9
 * Amazon Linux 2023
