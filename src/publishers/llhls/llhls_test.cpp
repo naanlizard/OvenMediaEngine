@@ -752,6 +752,28 @@ TEST(LLHlsChunklist, DefaultViewListsThePartGetLastSequenceNumberReported)
 	EXPECT_EQ(missing, 0);
 }
 
+TEST(LLHlsChunklist, CompletedSegmentListsItsWholeDuration)
+{
+	auto chunklist = CreateChunklist(CreateVideoTrack());
+	chunklist->CreateSegmentInfo(LLHlsChunklist::SegmentInfo(0, "seg_1_0_video_key_llhls.m4s"));
+
+	// Completed by its last partial
+	chunklist->AppendPartialSegmentInfo(0, LLHlsChunklist::SegmentInfo(0, 0, 2.5, 1000, "part_1_0_0_video_key_llhls.m4s", "part_1_0_1_video_key_llhls.m4s", true, false));
+	chunklist->AppendPartialSegmentInfo(0, LLHlsChunklist::SegmentInfo(1, 2500, 3.5, 1000, "part_1_0_1_video_key_llhls.m4s", "part_1_1_0_video_key_llhls.m4s", false, true));
+
+	// Completed without a partial, at a track change boundary
+	chunklist->CreateSegmentInfo(LLHlsChunklist::SegmentInfo(1, "seg_1_1_video_key_llhls.m4s"));
+	chunklist->AppendPartialSegmentInfo(1, LLHlsChunklist::SegmentInfo(0, 6000, 1.25, 1000, "part_1_1_0_video_key_llhls.m4s", "part_1_1_1_video_key_llhls.m4s", true, false));
+	chunklist->CompleteSegmentInfo(1, "part_1_2_0_video_key_llhls.m4s", kInitialMapUri);
+
+	for (const auto &playlist : {DefaultView(chunklist), chunklist->ToString("session=1", false, false, true), chunklist->ToString("", false, true, false)})
+	{
+		EXPECT_NE(playlist.IndexOf("#EXTINF:6.000000,\nseg_1_0_video_key_llhls.m4s"), -1);
+		EXPECT_NE(playlist.IndexOf("#EXTINF:1.250000,\nseg_1_1_video_key_llhls.m4s"), -1);
+		EXPECT_EQ(CountOccurrences(playlist, "#EXT-X-PROGRAM-DATE-TIME:"), 2);
+	}
+}
+
 TEST(LLHlsChunklist, GzipDefaultViewIsTheTextUntilTheNextChange)
 {
 	auto chunklist = CreateChunklist(CreateVideoTrack());

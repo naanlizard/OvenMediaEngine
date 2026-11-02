@@ -88,7 +88,7 @@ public:
 			return _size;
 		}
 
-		ov::String GetUrl() const
+		const ov::String &GetUrl() const
 		{
 			return _url;
 		}
@@ -131,6 +131,11 @@ public:
 
 			_partial_segments.push_back(partial_segment);
 
+			if (_completed == true)
+			{
+				RenderTags();
+			}
+
 			return true;
 		}
 
@@ -156,6 +161,8 @@ public:
 		void SetCompleted()
 		{
 			_completed = true;
+
+			RenderTags();
 		}
 
 		bool IsCompleted() const
@@ -262,12 +269,61 @@ public:
 			return _markers;
 		}
 
+		// A completed segment's tags no longer change, so they are rendered once, not on every
+		// render of a chunklist that lists every segment of a DVR window
+		void AppendProgramDateTimeTag(ov::String &playlist) const
+		{
+			if (_tags == nullptr)
+			{
+				FormatProgramDateTimeTag(playlist);
+				return;
+			}
+
+			playlist.Append(_tags->program_date_time.CStr(), _tags->program_date_time.GetLength());
+		}
+
+		void AppendExtInfTag(ov::String &playlist) const
+		{
+			if (_tags == nullptr)
+			{
+				FormatExtInfTag(playlist);
+				return;
+			}
+
+			playlist.Append(_tags->extinf.CStr(), _tags->extinf.GetLength());
+		}
+
 		ov::String ToString() const
 		{
 			return ov::String::FormatString("seq(%" PRId64") start_date(%s) duration(%f) size(%" PRIu64 ") url(%s) next_url(%s) is_independent(%s) completed(%s)", _sequence, GetStartDate().CStr(), _duration, _size, _url.CStr(), _next_url.CStr(), _is_independent ? "true" : "false", _completed ? "true" : "false");
 		}
 
 	private:
+		struct Tags
+		{
+			ov::String program_date_time;
+			ov::String extinf;
+		};
+
+		void FormatProgramDateTimeTag(ov::String &out) const
+		{
+			std::chrono::system_clock::time_point tp{std::chrono::milliseconds{GetStartTime()}};
+			out.AppendFormat("#EXT-X-PROGRAM-DATE-TIME:%s\n", ov::Converter::ToISO8601String(tp).CStr());
+		}
+
+		void FormatExtInfTag(ov::String &out) const
+		{
+			out.AppendFormat("#EXTINF:%lf,\n", _duration);
+		}
+
+		void RenderTags()
+		{
+			auto tags = std::make_shared<Tags>();
+			FormatProgramDateTimeTag(tags->program_date_time);
+			FormatExtInfTag(tags->extinf);
+			_tags = tags;
+		}
+
 		int64_t _sequence = -1;
 		int64_t _start_time = 0; // milliseconds since epoch (1970-01-01 00:00:00)
 		double _duration = 0; // seconds
@@ -286,6 +342,9 @@ public:
 		std::deque<std::shared_ptr<SegmentInfo>> _partial_segments;
 
 		std::vector<std::shared_ptr<Marker>> _markers;
+
+		// Only a completed segment has them; behind a pointer, so the partial segments' infos do not carry the strings
+		std::shared_ptr<const Tags> _tags;
 	}; // class SegmentInfo
 
 	LLHlsChunklist(const ov::String &url, const std::shared_ptr<const MediaTrack> &track, 

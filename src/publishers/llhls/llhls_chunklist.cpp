@@ -295,6 +295,9 @@ bool LLHlsChunklist::AppendPartialSegmentInfo(uint32_t segment_sequence, const S
 			_last_started_track_version = info.GetTrackVersion();
 		}
 
+		// Before the completion, so a completed segment renders its tags once, with its whole duration
+		segment->InsertPartialSegmentInfo(std::make_shared<SegmentInfo>(info));
+
 		if (info.IsCompleted() == true)
 		{
 			segment->SetCompleted();
@@ -312,8 +315,6 @@ bool LLHlsChunklist::AppendPartialSegmentInfo(uint32_t segment_sequence, const S
 	
 		_last_segment_sequence = segment_sequence;
 		_last_partial_segment_sequence = info.GetSequence();
-
-		segment->InsertPartialSegmentInfo(std::make_shared<SegmentInfo>(info));
 
 		_default_chunklist_version++;
 	}
@@ -689,10 +690,9 @@ ov::String LLHlsChunklist::MakeChunklist(const ov::String &query_string, bool sk
 				emit_ext_x_key_if_changed(current_content_version);
 			}
 
-			std::chrono::system_clock::time_point tp{std::chrono::milliseconds{segment->GetStartTime()}};
-			playlist.AppendFormat("#EXT-X-PROGRAM-DATE-TIME:%s\n", ov::Converter::ToISO8601String(tp).CStr());
-			playlist.AppendFormat("#EXTINF:%lf,\n", segment->GetDuration());
-			playlist.AppendFormat("%s", segment->GetUrl().CStr());
+			segment->AppendProgramDateTimeTag(playlist);
+			segment->AppendExtInfTag(playlist);
+			playlist.Append(segment->GetUrl().CStr(), segment->GetUrl().GetLength());
 			if (query_string.IsEmpty() == false)
 			{
 				playlist.AppendFormat("?%s", query_string.CStr());
@@ -742,13 +742,11 @@ ov::String LLHlsChunklist::MakeChunklist(const ov::String &query_string, bool sk
 			emit_ext_x_key_if_changed(current_content_version);
 		}
 
-		std::chrono::system_clock::time_point tp{std::chrono::milliseconds{segment->GetStartTime()}};
-		playlist.AppendFormat("#EXT-X-PROGRAM-DATE-TIME:%s\n", ov::Converter::ToISO8601String(tp).CStr());
+		segment->AppendProgramDateTimeTag(playlist);
 
-		logtt("MakeChunklist[Track : %s/%s]: segment(%" PRId64 ") duration(%.2f) url(%s) start_time(%" PRId64 ") date_time(%s)",
+		logtt("MakeChunklist[Track : %s/%s]: segment(%" PRId64 ") duration(%.2f) url(%s) start_time(%" PRId64 ")",
 			_track->GetPublicName().CStr(), _track->GetVariantName().CStr(),
-			segment->GetSequence(), segment->GetDuration(), segment->GetUrl().CStr(), segment->GetStartTime(), 
-			ov::Converter::ToISO8601String(tp).CStr());
+			segment->GetSequence(), segment->GetDuration(), segment->GetUrl().CStr(), segment->GetStartTime());
 
 		// Low Latency Mode
 		if (legacy == false)
@@ -779,8 +777,8 @@ ov::String LLHlsChunklist::MakeChunklist(const ov::String &query_string, bool sk
 		// Print completed segment info (EXTINF + segment URI)
 		if (segment->IsCompleted())
 		{
-			playlist.AppendFormat("#EXTINF:%lf,\n", segment->GetDuration());
-			playlist.AppendFormat("%s", segment->GetUrl().CStr());
+			segment->AppendExtInfTag(playlist);
+			playlist.Append(segment->GetUrl().CStr(), segment->GetUrl().GetLength());
 			if (query_string.IsEmpty() == false)
 			{
 				playlist.AppendFormat("?%s", query_string.CStr());
