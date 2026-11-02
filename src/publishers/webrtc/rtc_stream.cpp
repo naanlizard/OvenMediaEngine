@@ -767,6 +767,8 @@ void RtcStream::SendVideoFrame(const std::shared_ptr<MediaPacket> &media_packet)
 	// delay (notably SendBufferedPackets() at the Started→Prepared transition)
 	// does not leak into the Pacer's anchor.
 	auto arrival_time = std::chrono::steady_clock::now();
+	// Done with only on return, so no later packet is dropped while this one may still be sent
+	ov::RaiiPtr<RtcStream> handled(this, [](RtcStream *stream) { stream->OnQueuedMediaPacketHandled(); });
 
 	if (GetState() == State::CREATED)
 	{
@@ -792,6 +794,7 @@ void RtcStream::SendVideoFrame(const std::shared_ptr<MediaPacket> &media_packet)
 void RtcStream::SendAudioFrame(const std::shared_ptr<MediaPacket> &media_packet)
 {
 	auto arrival_time = std::chrono::steady_clock::now();
+	ov::RaiiPtr<RtcStream> handled(this, [](RtcStream *stream) { stream->OnQueuedMediaPacketHandled(); });
 
 	if (GetState() == State::CREATED)
 	{
@@ -853,7 +856,46 @@ bool RtcStream::FlushInitialMediaPackets()
 		}
 	}
 
+	_dropping_without_session.store(has_session == false, std::memory_order_release);
+
 	return has_session;
+}
+
+bool RtcStream::AdmitToQueue(const std::shared_ptr<MediaPacket> &media_packet)
+{
+	// The worker skips a stream that failed to start or has stopped
+	auto state = GetState();
+	if (state == State::ERROR || state == State::STOPPED)
+	{
+		return false;
+	}
+
+	// The worker's count is read first: at zero, everything the worker did with the admitted packets is visible,
+	// including delivering one to a session that joined meanwhile
+	if (state == State::STARTED && _queued_media_packets.load() == 0 &&
+		GetSessionCount() == 0 && _dropping_without_session.load() == true)
+	{
+		// A packet carrying another track object is queued, so the worker applies the track change to the stream
+		const auto &packet_track = media_packet->GetTrack();
+		if (packet_track == nullptr || packet_track == GetTrack(media_packet->GetTrackId()))
+		{
+			return false;
+		}
+	}
+
+	_queued_media_packets++;
+
+	return true;
+}
+
+void RtcStream::CancelAdmission()
+{
+	OnQueuedMediaPacketHandled();
+}
+
+void RtcStream::OnQueuedMediaPacketHandled()
+{
+	_queued_media_packets--;
 }
 
 bool RtcStream::SendBufferedPackets()

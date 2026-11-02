@@ -84,7 +84,10 @@ namespace pub
 	bool ApplicationWorker::PushMediaPacket(const std::shared_ptr<Stream> &stream, const std::shared_ptr<MediaPacket> &media_packet)
 	{
 		auto data = std::make_shared<ApplicationWorker::StreamData>(stream, media_packet);
-		_stream_data_queue.Enqueue(std::move(data));
+		if (_stream_data_queue.Enqueue(std::move(data)) == false)
+		{
+			return false;
+		}
 
 		_queue_event.Notify();
 
@@ -448,13 +451,18 @@ namespace pub
 	bool Application::OnSendFrame(const std::shared_ptr<info::Stream> &stream,
 								  const std::shared_ptr<MediaPacket> &media_packet)
 	{
-		auto application_worker = GetWorkerByStreamID(stream->GetId());
+		return EnqueueMediaPacket(stream->GetId(), GetStream(stream->GetId()), media_packet);
+	}
+
+	bool Application::EnqueueMediaPacket(info::stream_id_t stream_id, const std::shared_ptr<Stream> &stream, const std::shared_ptr<MediaPacket> &media_packet)
+	{
+		auto application_worker = GetWorkerByStreamID(stream_id);
 		if (application_worker == nullptr)
 		{
 			return false;
 		}
 
-		return application_worker->PushMediaPacket(GetStream(stream->GetId()), media_packet);
+		return application_worker->PushMediaPacket(stream, media_packet);
 	}
 
 	uint32_t Application::GetStreamCount()

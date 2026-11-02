@@ -42,6 +42,35 @@ std::shared_ptr<Certificate> RtcApplication::GetCertificate()
 	return _certificate;
 }
 
+bool RtcApplication::OnSendFrame(const std::shared_ptr<info::Stream> &stream, const std::shared_ptr<MediaPacket> &media_packet)
+{
+	auto media_type = media_packet->GetMediaType();
+	if (media_type == cmn::MediaType::Video || media_type == cmn::MediaType::Audio)
+	{
+		auto pub_stream = GetStream(stream->GetId());
+
+		// Every stream of this application is an RtcStream (CreateStream)
+		auto rtc_stream = static_cast<RtcStream *>(pub_stream.get());
+		if (rtc_stream != nullptr)
+		{
+			if (rtc_stream->AdmitToQueue(media_packet) == false)
+			{
+				return true;
+			}
+
+			if (EnqueueMediaPacket(stream->GetId(), pub_stream, media_packet) == false)
+			{
+				rtc_stream->CancelAdmission();
+				return false;
+			}
+
+			return true;
+		}
+	}
+
+	return Application::OnSendFrame(stream, media_packet);
+}
+
 std::shared_ptr<pub::Stream> RtcApplication::CreateStream(const std::shared_ptr<info::Stream> &info, uint32_t worker_count)
 {
 	logtt("RtcApplication::CreateStream : %s/%u", info->GetName().CStr(), info->GetId());

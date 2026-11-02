@@ -120,19 +120,40 @@ namespace
 				MediaPacketFlag::Key, cmn::BitstreamFormat::OPUS, cmn::PacketType::RAW);
 		}
 
+		// What the application and the worker do with a packet: the stream admits it, then sends it.
+		// False when the application would not queue it.
+		bool Queue(const std::shared_ptr<MediaPacket> &frame)
+		{
+			if (stream->AdmitToQueue(frame) == false)
+			{
+				return false;
+			}
+
+			if (frame->GetMediaType() == MediaType::Video)
+			{
+				stream->SendVideoFrame(frame);
+			}
+			else
+			{
+				stream->SendAudioFrame(frame);
+			}
+
+			return true;
+		}
+
 		std::shared_ptr<RtcStream> stream;
 	};
 }  // namespace
 
 TEST_F(RtcStreamStartupTest, DeliversBufferedKeyframeBeforeFirstDelta)
 {
-	stream->SendVideoFrame(VideoFrame(0, MediaPacketFlag::Key));
+	Queue(VideoFrame(0, MediaPacketFlag::Key));
 	ASSERT_TRUE(stream->EnterStart());
 	ASSERT_EQ(stream->GetState(), pub::Stream::State::STARTED);
 
 	auto session = std::make_shared<RecordingSession>(stream);
 	ASSERT_TRUE(stream->AddSession(session));
-	stream->SendVideoFrame(VideoFrame(3000, MediaPacketFlag::NoFlag));
+	Queue(VideoFrame(3000, MediaPacketFlag::NoFlag));
 
 	ASSERT_EQ(session->packets.size(), 2u);
 	EXPECT_TRUE(session->packets[0]->IsKeyframe());
@@ -143,14 +164,14 @@ TEST_F(RtcStreamStartupTest, DeliversBufferedKeyframeBeforeFirstDelta)
 
 TEST_F(RtcStreamStartupTest, DropsBufferedVideoAfterASkippedFrame)
 {
-	stream->SendVideoFrame(VideoFrame(0, MediaPacketFlag::Key));
+	Queue(VideoFrame(0, MediaPacketFlag::Key));
 	ASSERT_TRUE(stream->EnterStart());
 	// Skipped with no session, so the buffered keyframe no longer leads into the next frame
-	stream->SendVideoFrame(VideoFrame(3000, MediaPacketFlag::NoFlag));
+	Queue(VideoFrame(3000, MediaPacketFlag::NoFlag));
 
 	auto session = std::make_shared<RecordingSession>(stream);
 	ASSERT_TRUE(stream->AddSession(session));
-	stream->SendVideoFrame(VideoFrame(6000, MediaPacketFlag::NoFlag));
+	Queue(VideoFrame(6000, MediaPacketFlag::NoFlag));
 
 	ASSERT_EQ(session->packets.size(), 1u);
 	EXPECT_EQ(session->packets[0]->Timestamp(), 6000u);
@@ -158,14 +179,14 @@ TEST_F(RtcStreamStartupTest, DropsBufferedVideoAfterASkippedFrame)
 
 TEST_F(RtcStreamStartupTest, DropsBufferedAudioAfterASkippedFrame)
 {
-	stream->SendAudioFrame(AudioFrame(0));
+	Queue(AudioFrame(0));
 	ASSERT_TRUE(stream->EnterStart());
 	// Skipped with no session, so the buffered audio would arrive out of date
-	stream->SendAudioFrame(AudioFrame(960));
+	Queue(AudioFrame(960));
 
 	auto session = std::make_shared<RecordingSession>(stream);
 	ASSERT_TRUE(stream->AddSession(session));
-	stream->SendAudioFrame(AudioFrame(1920));
+	Queue(AudioFrame(1920));
 
 	ASSERT_EQ(session->packets.size(), 1u);
 	EXPECT_EQ(session->packets[0]->Timestamp(), 1920u);
@@ -173,16 +194,107 @@ TEST_F(RtcStreamStartupTest, DropsBufferedAudioAfterASkippedFrame)
 
 TEST_F(RtcStreamStartupTest, DeliversBufferedAudioWhenNothingWasSkipped)
 {
-	stream->SendAudioFrame(AudioFrame(0));
+	Queue(AudioFrame(0));
 	ASSERT_TRUE(stream->EnterStart());
 
 	auto session = std::make_shared<RecordingSession>(stream);
 	ASSERT_TRUE(stream->AddSession(session));
-	stream->SendAudioFrame(AudioFrame(960));
+	Queue(AudioFrame(960));
 
 	ASSERT_EQ(session->packets.size(), 2u);
 	EXPECT_EQ(session->packets[0]->Timestamp(), 0u);
 	EXPECT_EQ(session->packets[1]->Timestamp(), 960u);
+}
+
+TEST_F(RtcStreamStartupTest, QueuesUntilTheWorkerHasDroppedWithoutASession)
+{
+	auto frame = [&](int64_t pts) {
+		auto video_frame = VideoFrame(pts, MediaPacketFlag::NoFlag);
+		video_frame->SetTrack(stream->GetTrack(1));
+		return video_frame;
+	};
+
+	// Before start the worker buffers packets
+	EXPECT_TRUE(Queue(VideoFrame(0, MediaPacketFlag::Key)));
+	ASSERT_TRUE(stream->EnterStart());
+
+	// Started, but the buffered keyframe is only cleared once the worker skips a frame
+	EXPECT_TRUE(Queue(frame(3000)));
+	EXPECT_FALSE(Queue(frame(6000)));
+
+	// A packet without a track object changes nothing in the stream either
+	EXPECT_FALSE(Queue(VideoFrame(9000, MediaPacketFlag::NoFlag)));
+}
+
+TEST_F(RtcStreamStartupTest, QueuesAPacketCarryingAnotherTrack)
+{
+	ASSERT_TRUE(stream->EnterStart());
+	Queue(VideoFrame(0, MediaPacketFlag::Key));
+
+	auto changed = VideoFrame(3000, MediaPacketFlag::NoFlag);
+	changed->SetTrack(std::make_shared<MediaTrack>(*stream->GetTrack(1)));
+
+	// The worker must see it to apply the new track to the stream
+	EXPECT_TRUE(stream->AdmitToQueue(changed));
+}
+
+TEST_F(RtcStreamStartupTest, NeverDropsAheadOfAQueuedPacket)
+{
+	ASSERT_TRUE(stream->EnterStart());
+	Queue(VideoFrame(0, MediaPacketFlag::Key));
+
+	// A keyframe carrying a new track object is queued, and the worker has not reached it yet
+	auto keyframe = VideoFrame(3000, MediaPacketFlag::Key);
+	keyframe->SetTrack(std::make_shared<MediaTrack>(*stream->GetTrack(1)));
+	ASSERT_TRUE(stream->AdmitToQueue(keyframe));
+
+	// The frames after it are queued too, so a session joining meanwhile gets them after the keyframe
+	auto delta = VideoFrame(6000, MediaPacketFlag::NoFlag);
+	delta->SetTrack(stream->GetTrack(1));
+	EXPECT_TRUE(stream->AdmitToQueue(delta));
+
+	stream->SendVideoFrame(keyframe);
+	stream->SendVideoFrame(delta);
+
+	auto next = VideoFrame(9000, MediaPacketFlag::NoFlag);
+	next->SetTrack(stream->GetTrack(1));
+	EXPECT_FALSE(stream->AdmitToQueue(next));
+}
+
+TEST_F(RtcStreamStartupTest, QueuesWhileASessionExists)
+{
+	ASSERT_TRUE(stream->EnterStart());
+	Queue(VideoFrame(0, MediaPacketFlag::Key));
+
+	auto frame = VideoFrame(3000, MediaPacketFlag::NoFlag);
+	frame->SetTrack(stream->GetTrack(1));
+	ASSERT_FALSE(stream->AdmitToQueue(frame));
+
+	auto session = std::make_shared<RecordingSession>(stream);
+	ASSERT_TRUE(stream->AddSession(session));
+	ASSERT_TRUE(stream->AdmitToQueue(frame));
+	stream->SendVideoFrame(frame);
+	EXPECT_EQ(session->packets.size(), 1u);
+
+	// After the last session leaves, packets are queued again until the worker skips one itself
+	ASSERT_TRUE(stream->RemoveSession(session->GetId()));
+	auto after = VideoFrame(6000, MediaPacketFlag::NoFlag);
+	after->SetTrack(stream->GetTrack(1));
+	ASSERT_TRUE(stream->AdmitToQueue(after));
+	stream->SendVideoFrame(after);
+
+	auto last = VideoFrame(9000, MediaPacketFlag::NoFlag);
+	last->SetTrack(stream->GetTrack(1));
+	EXPECT_FALSE(stream->AdmitToQueue(last));
+}
+
+TEST_F(RtcStreamStartupTest, DropsEveryPacketOfAStreamThatFailedToStart)
+{
+	stream->SetState(pub::Stream::State::ERROR);
+
+	auto changed = VideoFrame(0, MediaPacketFlag::Key);
+	changed->SetTrack(std::make_shared<MediaTrack>(*stream->GetTrack(1)));
+	EXPECT_FALSE(stream->AdmitToQueue(changed));
 }
 
 // Audio-only rendition declared AFTER the video rendition is cross-added into the

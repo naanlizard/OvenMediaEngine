@@ -52,6 +52,12 @@ public:
 
 	std::shared_ptr<RtxRtpPacket> GetRtxRtpPacket(uint32_t track_id, uint8_t origin_payload_type, uint16_t origin_sequence_number);
 
+	// Called by RtcApplication for an audio or video packet before it queues it. False when the worker would only
+	// drop it, so it is not queued; otherwise the packet counts as queued until SendVideoFrame/SendAudioFrame end.
+	bool AdmitToQueue(const std::shared_ptr<MediaPacket> &media_packet);
+	// For an admitted packet that could not be queued
+	void CancelAdmission();
+
 	// RtpRtcpPacketizerInterface Implementation
 	bool OnRtpPacketized(std::shared_ptr<RtpPacket> packet) override;
 
@@ -138,6 +144,12 @@ private:
 	// Stream-shared adaptive delay controller used by the frame pacers.
 	std::shared_ptr<AdaptiveDelayController> _adaptive_delay_controller;
 	ov::Queue<std::shared_ptr<MediaPacket>> _initial_media_packet_buffer;
+	// Set once the worker drops packets for want of a session, after it has cleared the initial buffer
+	std::atomic<bool> _dropping_without_session{false};
+	// Admitted packets the worker is not done with; none is dropped ahead of one of them. One the worker never
+	// gets (its stream stopping) stays counted, which only keeps later packets queued as before.
+	std::atomic<int64_t> _queued_media_packets{0};
+	void OnQueuedMediaPacketHandled();
 
 	ov::String _default_playlist_name;
 

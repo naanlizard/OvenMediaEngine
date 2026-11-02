@@ -100,18 +100,18 @@ namespace ov
 			MonitorInstance->OnQueueUpdated(*this);
 		}
 
-		// Urgent item will be inserted at the front of the queue
-		void Enqueue(T item, bool urgent = false, int timeout = Infinite)
+		// Urgent item will be inserted at the front of the queue. Returns false when the item was dropped instead.
+		bool Enqueue(T item, bool urgent = false, int timeout = Infinite)
 		{
 			auto node = new(std::nothrow) ManagedQueueNode(std::move(item), urgent);
 			if (node == nullptr)
 			{
 				loge(LOG_TAG, "Failed to allocate memory for queue node.");
-				return;
+				return false;
 			}
 			EnqueuePos pos = urgent ? EnqueuePos::EnqueueFrontPos : EnqueuePos::EnqueueBackPos;
 
-			EnqueueInternal(node, timeout, pos);
+			return EnqueueInternal(node, timeout, pos);
 		}
 
 		std::optional<T> Front(int timeout = Infinite)
@@ -433,7 +433,7 @@ namespace ov
 			EnqueueBackPos
 		};
 
-		void EnqueueInternal(ManagedQueueNode* node, int timeout, EnqueuePos push_method)
+		bool EnqueueInternal(ManagedQueueNode* node, int timeout, EnqueuePos push_method)
 		{
 			LockGuard lock(_mutex);
 
@@ -454,7 +454,7 @@ namespace ov
 						logw(LOG_TAG, "[%s] Stop is requested. Failed to enqueue item.", (_urn != nullptr) ? _urn->ToString().CStr() : "NoUrn");
 					}
 					delete node;
-					return;
+					return false;
 				}
 
 				if (!result)
@@ -464,7 +464,7 @@ namespace ov
 						loge(LOG_TAG, "[%s] queue is full. q.size(%zu), q.threshold(%zu)", (_urn != nullptr) ? _urn->ToString().CStr() : "NoUrn", _size.load(), _threshold);
 					}
 					delete node;
-					return;
+					return false;
 				}
 			}
 
@@ -483,6 +483,8 @@ namespace ov
 			// when buffering_delay != 0 this lets the Dequeue thread recalculate
 			// its timed wait based on the (possibly new) front node.
 			_condition.NotifyAll();
+
+			return true;
 		}
 
 		void PushBack(ManagedQueueNode* node) OV_REQUIRES(_mutex)
