@@ -40,6 +40,20 @@ bool ThumbnailApplication::Stop()
 	return Application::Stop();
 }
 
+bool ThumbnailApplication::OnSendFrame(const std::shared_ptr<info::Stream> &stream, const std::shared_ptr<MediaPacket> &media_packet)
+{
+	auto pub_stream = GetStream(stream->GetId());
+
+	// Every stream of this application is a ThumbnailStream (CreateStream)
+	auto thumbnail_stream = static_cast<ThumbnailStream *>(pub_stream.get());
+	if (thumbnail_stream != nullptr && thumbnail_stream->CanDropWithoutQueueing(media_packet))
+	{
+		return true;
+	}
+
+	return EnqueueMediaPacket(stream->GetId(), pub_stream, media_packet);
+}
+
 std::shared_ptr<pub::Stream> ThumbnailApplication::CreateStream(const std::shared_ptr<info::Stream> &info, uint32_t worker_count)
 {
 	logtt("Created stream : %s/%u", info->GetName().CStr(), info->GetId());

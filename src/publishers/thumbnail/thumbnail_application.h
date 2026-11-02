@@ -19,6 +19,8 @@ public:
 		return _cors_manager;
 	}
 
+	bool OnSendFrame(const std::shared_ptr<info::Stream> &stream, const std::shared_ptr<MediaPacket> &media_packet) override;
+
 private:
 	bool Start() override;
 	bool Stop() override;

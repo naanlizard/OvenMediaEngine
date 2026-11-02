@@ -14,6 +14,31 @@ std::shared_ptr<ThumbnailStream> ThumbnailStream::Create(const std::shared_ptr<p
 	return stream;
 }
 
+bool ThumbnailStream::CanDropWithoutQueueing(const std::shared_ptr<MediaPacket> &media_packet) const
+{
+	auto media_type = media_packet->GetMediaType();
+	if (media_type != cmn::MediaType::Video && media_type != cmn::MediaType::Audio)
+	{
+		return false;
+	}
+
+	// The worker skips a stream that failed to start (no image track) or has stopped
+	if (GetState() == State::ERROR || GetState() == State::STOPPED)
+	{
+		return true;
+	}
+
+	auto track = GetTrack(media_packet->GetTrackId());
+	if (track == nullptr || cmn::IsImageCodec(track->GetCodecId()) == true)
+	{
+		return false;
+	}
+
+	// A packet carrying another track object is queued, so the worker applies the track change to the stream
+	const auto &packet_track = media_packet->GetTrack();
+	return (packet_track == nullptr) || (packet_track == track);
+}
+
 ThumbnailStream::ThumbnailStream(const std::shared_ptr<pub::Application> application,
 								 const info::Stream &info)
 	: Stream(application, info)
@@ -39,10 +64,7 @@ bool ThumbnailStream::Start()
 	bool found = false;
 	for (const auto &[id, track] : GetTracks())
 	{
-		if ((track->GetCodecId() == cmn::MediaCodecId::Png ||
-			 track->GetCodecId() == cmn::MediaCodecId::Jpeg ||
-			 track->GetCodecId() == cmn::MediaCodecId::Webp ||
-			 track->GetCodecId() == cmn::MediaCodecId::Avif))
+		if (cmn::IsImageCodec(track->GetCodecId()))
 		{
 			found = true;
 			break;
@@ -80,10 +102,7 @@ void ThumbnailStream::SendVideoFrame(const std::shared_ptr<MediaPacket> &media_p
 		return;
 	}
 
-	if (!(track->GetCodecId() == cmn::MediaCodecId::Png ||
-		  track->GetCodecId() == cmn::MediaCodecId::Jpeg ||
-		  track->GetCodecId() == cmn::MediaCodecId::Webp ||
-		  track->GetCodecId() == cmn::MediaCodecId::Avif))
+	if (cmn::IsImageCodec(track->GetCodecId()) == false)
 	{
 		// Could not support codec for image
 		return;

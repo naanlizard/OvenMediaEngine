@@ -20,6 +20,9 @@ public:
 	void SendAudioFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
 	void SendDataFrame(const std::shared_ptr<MediaPacket> &media_packet) override {} // Not supported
 
+	// Whether the worker would only drop this packet, so it need not be queued: audio and video of a non-image track
+	bool CanDropWithoutQueueing(const std::shared_ptr<MediaPacket> &media_packet) const;
+
 	// Returns nullptr immediately if the stream has no track for codec_id, or if no image is
 	// cached by the time timeout_ms elapses (timeout_ms = 0 checks the cache once and returns)
 	std::shared_ptr<ov::Data> GetVideoFrameByCodecId(cmn::MediaCodecId codec_id, int64_t timeout_ms = 0);

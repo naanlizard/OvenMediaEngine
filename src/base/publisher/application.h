@@ -115,6 +115,9 @@ namespace pub
 		explicit Application(const std::shared_ptr<Publisher> &publisher, const info::Application &application_info);
 		virtual ~Application();
 
+		// What OnSendFrame does for a stream the caller has already resolved with GetStream(stream_id)
+		bool EnqueueMediaPacket(info::stream_id_t stream_id, const std::shared_ptr<Stream> &stream, const std::shared_ptr<MediaPacket> &media_packet);
+
 		std::shared_mutex 		_stream_map_mutex;
 		std::map<uint32_t, std::shared_ptr<Stream>> _streams;
 
