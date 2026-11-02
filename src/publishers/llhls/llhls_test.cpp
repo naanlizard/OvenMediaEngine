@@ -5,6 +5,10 @@
 
 #include <base/modules/data_format/cue_event/cue_event.h>
 #include <base/modules/marker/marker.h>
+#include <zlib.h>
+
+#include <atomic>
+#include <thread>
 
 namespace
 {
@@ -75,6 +79,34 @@ namespace
 	ov::String KeyIdAttribute(const char *key_id_hex)
 	{
 		return ov::String::FormatString("KEYID=0x%s", ov::String(key_id_hex).UpperCaseString().CStr());
+	}
+
+	ov::String Gunzip(const std::shared_ptr<const ov::Data> &data)
+	{
+		z_stream zs{};
+		inflateInit2(&zs, 15 | 16);
+		zs.next_in = const_cast<Bytef *>(data->GetDataAs<Bytef>());
+		zs.avail_in = static_cast<uInt>(data->GetLength());
+
+		std::string text;
+		char buffer[4096];
+		int result;
+		do
+		{
+			zs.next_out = reinterpret_cast<Bytef *>(buffer);
+			zs.avail_out = sizeof(buffer);
+			result = inflate(&zs, Z_NO_FLUSH);
+			text.append(buffer, sizeof(buffer) - zs.avail_out);
+		} while (result == Z_OK);
+		inflateEnd(&zs);
+
+		EXPECT_EQ(result, Z_STREAM_END);
+		return ov::String(text.c_str(), text.size());
+	}
+
+	ov::String DefaultView(const std::shared_ptr<LLHlsChunklist> &chunklist)
+	{
+		return chunklist->ToString("", false, false, true);
 	}
 
 	int CountOccurrences(const ov::String &text, const ov::String &needle)
@@ -613,6 +645,128 @@ TEST(LLHlsChunklist, NoKeyTagWhenCencDisabled)
 
 	// No key registered, so the playlist carries no EXT-X-KEY
 	EXPECT_EQ(playlist.IndexOf("#EXT-X-KEY:"), -1);
+}
+
+TEST(LLHlsChunklist, DefaultViewFollowsEveryChange)
+{
+	// One chunklist is requested after every change, the other is rendered once at the end
+	auto requested = CreateChunklist(CreateVideoTrack());
+	auto reference = CreateChunklist(CreateVideoTrack());
+	auto both = {requested, reference};
+
+	for (auto &chunklist : both)
+	{
+		AppendSegment(chunklist, 0, 1, kInitialMapUri);
+	}
+	EXPECT_NE(DefaultView(requested).IndexOf("seg_1_0_video_key_llhls.m4s"), -1);
+
+	for (auto &chunklist : both)
+	{
+		AppendSegment(chunklist, 1, 2, kSecondMapUri, true);
+	}
+	EXPECT_NE(DefaultView(requested).IndexOf("#EXT-X-DISCONTINUITY\n"), -1);
+
+	for (auto &chunklist : both)
+	{
+		chunklist->SetUpcomingMapUri("init_1_video_key_v3_llhls.m4s", 3);
+	}
+	EXPECT_NE(DefaultView(requested).IndexOf("#EXT-X-PRELOAD-HINT:TYPE=MAP,URI=\"init_1_video_key_v3_llhls.m4s\""), -1);
+
+	for (auto &chunklist : both)
+	{
+		chunklist->RemoveSegmentInfo(0);
+	}
+	EXPECT_EQ(DefaultView(requested).IndexOf("seg_1_0_video_key_llhls.m4s"), -1);
+
+	for (auto &chunklist : both)
+	{
+		AppendSegment(chunklist, 2, 3, "init_1_video_key_v3_llhls.m4s", true);
+		chunklist->SetEndList();
+	}
+	EXPECT_NE(DefaultView(requested).IndexOf("#EXT-X-ENDLIST"), -1);
+
+	EXPECT_EQ(DefaultView(requested), DefaultView(reference));
+}
+
+TEST(LLHlsChunklist, DefaultViewListsThePartGetLastSequenceNumberReported)
+{
+	auto chunklist = CreateChunklist(CreateVideoTrack());
+	std::atomic<bool> done = false;
+	int checked = 0;
+	int missing = 0;
+
+	// The newest listed part, not the preload hint that names the next one
+	auto lists_part = [](const ov::String &view, int64_t msn, int64_t psn) {
+		off_t last_part = -1;
+		for (auto index = view.IndexOf("#EXT-X-PART:"); index != -1; index = view.IndexOf("#EXT-X-PART:", index + 1))
+		{
+			last_part = index;
+		}
+		int64_t listed_msn = -1, listed_psn = -1;
+		if (last_part >= 0)
+		{
+			auto uri = view.Substring(view.IndexOf("part_1_", last_part));
+			std::sscanf(uri.CStr(), "part_1_%" SCNd64 "_%" SCNd64, &listed_msn, &listed_psn);
+		}
+		return listed_msn > msn || (listed_msn == msn && listed_psn >= psn);
+	};
+
+	// A blocking request is answered once GetLastSequenceNumber reports its part, so the views must list it
+	std::thread reader([&]() {
+		int64_t last_msn = -1, last_psn = -1;
+		while (done == false)
+		{
+			int64_t msn, psn;
+			chunklist->GetLastSequenceNumber(msn, psn);
+			if (msn < 0 || (msn == last_msn && psn == last_psn))
+			{
+				continue;
+			}
+			last_msn = msn;
+			last_psn = psn;
+
+			if (lists_part(DefaultView(chunklist), msn, psn) == false ||
+				lists_part(Gunzip(chunklist->ToGzipData("", false, false, true)), msn, psn) == false)
+			{
+				missing++;
+			}
+			checked++;
+		}
+	});
+
+	for (uint32_t sequence = 0; sequence < 200; sequence++)
+	{
+		chunklist->CreateSegmentInfo(LLHlsChunklist::SegmentInfo(sequence, ov::String::FormatString("seg_1_%u_video_key_llhls.m4s", sequence)));
+		for (uint32_t part = 0; part < 6; part++)
+		{
+			auto url = ov::String::FormatString("part_1_%u_%u_video_key_llhls.m4s", sequence, part);
+			auto next_url = ov::String::FormatString("part_1_%u_%u_video_key_llhls.m4s", part == 5 ? sequence + 1 : sequence, part == 5 ? 0 : part + 1);
+			chunklist->AppendPartialSegmentInfo(sequence, LLHlsChunklist::SegmentInfo(part, (sequence * 6 + part) * 1000, 1.0, 1000, url, next_url, part == 0, part == 5));
+		}
+	}
+
+	done = true;
+	reader.join();
+
+	EXPECT_GT(checked, 0);
+	EXPECT_EQ(missing, 0);
+}
+
+TEST(LLHlsChunklist, GzipDefaultViewIsTheTextUntilTheNextChange)
+{
+	auto chunklist = CreateChunklist(CreateVideoTrack());
+	AppendSegment(chunklist, 0, 1, kInitialMapUri);
+
+	auto gzip = chunklist->ToGzipData("", false, false, true);
+	EXPECT_EQ(Gunzip(gzip), DefaultView(chunklist));
+	EXPECT_EQ(chunklist->ToGzipData("", false, false, true), gzip);
+
+	AppendSegment(chunklist, 1, 1, kInitialMapUri);
+
+	auto next_gzip = chunklist->ToGzipData("", false, false, true);
+	EXPECT_NE(next_gzip, gzip);
+	EXPECT_NE(Gunzip(next_gzip).IndexOf("seg_1_1_video_key_llhls.m4s"), -1);
+	EXPECT_EQ(Gunzip(next_gzip), DefaultView(chunklist));
 }
 
 namespace

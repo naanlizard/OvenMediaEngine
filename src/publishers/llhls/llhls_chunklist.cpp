@@ -76,9 +76,10 @@ void LLHlsChunklist::Release()
 
 void LLHlsChunklist::SetEndList()
 {
+	std::lock_guard<std::shared_mutex> lock(_segments_guard);
 	_end_list = true;
 
-	UpdateCacheForDefaultChunklist();
+	_default_chunklist_version++;
 }
 
 void LLHlsChunklist::SetWallclockOffset(int64_t offset_ms)
@@ -163,9 +164,9 @@ bool LLHlsChunklist::CompleteSegmentInfo(uint32_t segment_sequence, const ov::St
 
 		_upcoming_map_uri = next_partial_map_uri;
 		_upcoming_content_version = next_partial_track_version;
-	}
 
-	UpdateCacheForDefaultChunklist();
+		_default_chunklist_version++;
+	}
 
 	return true;
 }
@@ -235,9 +236,9 @@ void LLHlsChunklist::SetUpcomingMapUri(const ov::String &map_uri, std::optional<
 		std::lock_guard<std::shared_mutex> lock(_segments_guard);
 		_upcoming_map_uri = map_uri;
 		_upcoming_content_version = track_version;
-	}
 
-	UpdateCacheForDefaultChunklist();
+		_default_chunklist_version++;
+	}
 }
 
 bool LLHlsChunklist::AppendPartialSegmentInfo(uint32_t segment_sequence, const SegmentInfo &info)
@@ -313,9 +314,9 @@ bool LLHlsChunklist::AppendPartialSegmentInfo(uint32_t segment_sequence, const S
 		_last_partial_segment_sequence = info.GetSequence();
 
 		segment->InsertPartialSegmentInfo(std::make_shared<SegmentInfo>(info));
-	}
 
-	UpdateCacheForDefaultChunklist();
+		_default_chunklist_version++;
+	}
 
 	return true;
 }
@@ -348,24 +349,23 @@ bool LLHlsChunklist::RemoveSegmentInfo(uint32_t segment_sequence)
 
 	_segments.erase(segment_sequence);
 
+	_default_chunklist_version++;
+
 	return true;
 }
 
-void LLHlsChunklist::UpdateCacheForDefaultChunklist()
+void LLHlsChunklist::RefreshCachedDefaultChunklist() const
 {
-	// no query string, no skip, no legacy, all segments
-	ov::String chunklist = MakeChunklist("", false, false, true);
+	if (_cached_default_chunklist_version == _default_chunklist_version)
 	{
-		// lock 
-		std::lock_guard<std::shared_mutex> lock(_cached_default_chunklist_guard);
-		_cached_default_chunklist = chunklist;
+		return;
 	}
 
-	{
-		// lock 
-		std::lock_guard<std::shared_mutex> lock(_cached_default_chunklist_gzip_guard);
-		_cached_default_chunklist_gzip = ov::Zip::CompressGzip(chunklist.ToData(false));
-	}
+	// no query string, no skip, no legacy, all segments
+	uint64_t version;
+	_cached_default_chunklist = MakeChunklist("", false, false, true, false, 0, &version);
+	_cached_default_chunklist_version = version;
+	_cached_default_chunklist_gzip = nullptr;
 }
 
 bool LLHlsChunklist::SaveOldSegmentInfo(std::shared_ptr<SegmentInfo> &segment_info)
@@ -441,9 +441,15 @@ ov::String LLHlsChunklist::MakeExtXKey(uint32_t content_version) const
 	return pub::llhls::MakeCencKeyTag(it->second, pub::llhls::PlaylistType::Media);
 }
 
-ov::String LLHlsChunklist::MakeChunklist(const ov::String &query_string, bool skip, bool legacy, bool rewind, bool vod, uint32_t vod_start_segment_number) const
+ov::String LLHlsChunklist::MakeChunklist(const ov::String &query_string, bool skip, bool legacy, bool rewind, bool vod, uint32_t vod_start_segment_number, uint64_t *chunklist_version) const
 {
 	std::shared_lock<std::shared_mutex> segment_lock(_segments_guard);
+	if (chunklist_version != nullptr)
+	{
+		// Every change bumps it inside an exclusive _segments_guard section
+		*chunklist_version = _default_chunklist_version;
+	}
+
 	uint8_t version = 6;
 	if (_segments.size() == 0)
 	{
@@ -874,15 +880,18 @@ ov::String LLHlsChunklist::MakeChunklist(const ov::String &query_string, bool sk
 
 ov::String LLHlsChunklist::ToString(const ov::String &query_string, bool skip, bool legacy, bool rewind, bool vod, uint32_t vod_start_segment_number) const
 {
-	if (_segments.size() == 0)
+	if (query_string.IsEmpty() && skip == false && legacy == false && rewind == true && vod == false && vod_start_segment_number == 0)
 	{
-		return "";
-	}
+		{
+			std::shared_lock<std::shared_mutex> lock(_cached_default_chunklist_guard);
+			if (_cached_default_chunklist_version == _default_chunklist_version)
+			{
+				return _cached_default_chunklist;
+			}
+		}
 
-	if (query_string.IsEmpty() && skip == false && legacy == false && rewind == true && vod == false && vod_start_segment_number == 0 && !_cached_default_chunklist.IsEmpty())
-	{
-		// return cached chunklist for default chunklist
-		std::shared_lock<std::shared_mutex> lock(_cached_default_chunklist_guard);
+		std::lock_guard<std::shared_mutex> lock(_cached_default_chunklist_guard);
+		RefreshCachedDefaultChunklist();
 		return _cached_default_chunklist;
 	}
 
@@ -891,10 +900,42 @@ ov::String LLHlsChunklist::ToString(const ov::String &query_string, bool skip, b
 
 std::shared_ptr<const ov::Data> LLHlsChunklist::ToGzipData(const ov::String &query_string, bool skip, bool legacy, bool rewind) const
 {
-	if (query_string.IsEmpty() && skip == false && legacy == false && _cached_default_chunklist_gzip != nullptr && rewind == true)
+	if (query_string.IsEmpty() && skip == false && legacy == false && rewind == true)
 	{
-		std::shared_lock<std::shared_mutex> lock(_cached_default_chunklist_gzip_guard);
-		return _cached_default_chunklist_gzip;
+		{
+			std::shared_lock<std::shared_mutex> lock(_cached_default_chunklist_guard);
+			if (_cached_default_chunklist_version == _default_chunklist_version && _cached_default_chunklist_gzip != nullptr)
+			{
+				return _cached_default_chunklist_gzip;
+			}
+		}
+
+		std::lock_guard<std::mutex> gzip_lock(_cached_default_chunklist_gzip_guard);
+
+		std::shared_ptr<ov::Data> text;
+		uint64_t text_version;
+		{
+			std::lock_guard<std::shared_mutex> lock(_cached_default_chunklist_guard);
+			RefreshCachedDefaultChunklist();
+			if (_cached_default_chunklist_gzip != nullptr)
+			{
+				return _cached_default_chunklist_gzip;
+			}
+
+			text = _cached_default_chunklist.ToData(false);
+			text_version = _cached_default_chunklist_version;
+		}
+
+		// Compressed outside the cache guard, so requests for the text do not wait for it
+		std::shared_ptr<const ov::Data> gzip = ov::Zip::CompressGzip(text);
+
+		std::lock_guard<std::shared_mutex> lock(_cached_default_chunklist_guard);
+		if (_cached_default_chunklist_version == text_version)
+		{
+			_cached_default_chunklist_gzip = gzip;
+		}
+
+		return gzip;
 	}
 
 	return ov::Zip::CompressGzip(ToString(query_string, skip, legacy, rewind).ToData(false));

@@ -363,7 +363,8 @@ private:
 
 	bool SaveOldSegmentInfo(std::shared_ptr<SegmentInfo> &segment_info);
 
-	ov::String MakeChunklist(const ov::String &query_string, bool skip, bool legacy, bool rewind, bool vod = false, uint32_t vod_start_segment_number = 0) const;
+	// chunklist_version, when given, receives _default_chunklist_version as of the segments rendered
+	ov::String MakeChunklist(const ov::String &query_string, bool skip, bool legacy, bool rewind, bool vod = false, uint32_t vod_start_segment_number = 0, uint64_t *chunklist_version = nullptr) const;
 
 	// EXT-X-KEY tag for the given content version, empty when that version carries
 	// no key (unencrypted, or unknown version)
@@ -424,11 +425,17 @@ private:
 	std::map<int32_t, std::shared_ptr<LLHlsChunklist>> _renditions;
 	mutable std::shared_mutex _renditions_guard;
 
-	ov::String _cached_default_chunklist;
+	// Default chunklist (no query string, rewound), rendered on the first request after a change.
+	// Bumped inside the _segments_guard section of each change, so a reader past GetLastSequenceNumber sees it.
+	std::atomic<uint64_t> _default_chunklist_version = 1;
+	// One compression at a time. Taken before _cached_default_chunklist_guard, which is not held while compressing.
+	mutable std::mutex _cached_default_chunklist_gzip_guard;
+	// Taken before _segments_guard and _renditions_guard (MakeChunklist also reads other renditions'), never inside them
 	mutable std::shared_mutex _cached_default_chunklist_guard;
-
-	std::shared_ptr<ov::Data> _cached_default_chunklist_gzip;
-	mutable std::shared_mutex _cached_default_chunklist_gzip_guard;
+	mutable uint64_t _cached_default_chunklist_version = 0;
+	mutable ov::String _cached_default_chunklist;
+	// Compression of _cached_default_chunklist, reset when that is rendered again
+	mutable std::shared_ptr<const ov::Data> _cached_default_chunklist_gzip;
 
 	// CENC key material per content version, so each segment's EXT-X-KEY matches the
 	// key its version was packaged with. A single entry when there is no key rotation.
@@ -444,5 +451,6 @@ private:
 
 	std::shared_ptr<Marker> _root_marker;
 
-	void UpdateCacheForDefaultChunklist();
+	// Called with _cached_default_chunklist_guard held exclusively
+	void RefreshCachedDefaultChunklist() const;
 };
