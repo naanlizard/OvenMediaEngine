@@ -250,6 +250,9 @@ bool LLHlsChunklist::AppendPartialSegmentInfo(uint32_t segment_sequence, const S
 		return false;
 	}
 
+	// Freed after _segments_guard is released
+	std::vector<SegmentInfo::PartialSegments> released_partial_segments;
+
 	{
 		std::lock_guard<std::shared_mutex> lock(_segments_guard);
 		// part duration is calculated on first segment
@@ -293,6 +296,8 @@ bool LLHlsChunklist::AppendPartialSegmentInfo(uint32_t segment_sequence, const S
 			}
 
 			_last_started_track_version = info.GetTrackVersion();
+
+			ReleaseOldPartialSegments(segment_sequence, released_partial_segments);
 		}
 
 		// Before the completion, so a completed segment renders its tags once, with its whole duration
@@ -320,6 +325,26 @@ bool LLHlsChunklist::AppendPartialSegmentInfo(uint32_t segment_sequence, const S
 	}
 
 	return true;
+}
+
+// Called with _segments_guard held. The released infos are handed to `released`, so the caller frees them outside the lock.
+void LLHlsChunklist::ReleaseOldPartialSegments(int64_t newest_segment_sequence, std::vector<SegmentInfo::PartialSegments> &released)
+{
+	// Only the newest segments list their parts: EXT-X-PART for the newest 3, one further back while
+	// the newest has no part yet, and the preload hint. Older ones, which DVR keeps, are listed whole.
+	auto release_until = newest_segment_sequence - kPartialSegmentsRetentionCount;
+	if (release_until <= _partial_segments_released_until)
+	{
+		return;
+	}
+
+	auto end = _segments.upper_bound(release_until);
+	for (auto it = _segments.upper_bound(_partial_segments_released_until); it != end; it++)
+	{
+		released.push_back(it->second->ReleasePartialSegments());
+	}
+
+	_partial_segments_released_until = release_until;
 }
 
 bool LLHlsChunklist::RemoveSegmentInfo(uint32_t segment_sequence)
@@ -789,7 +814,7 @@ ov::String LLHlsChunklist::MakeChunklist(const ov::String &query_string, bool sk
 		// Output PRELOAD-HINT after the last segment (including after EXTINF if completed)
 		if (legacy == false && _preload_hint_enabled == true &&
 			segment->GetSequence() == last_segment->GetSequence() &&
-			segment->GetPartialSegmentsCount() > 0)
+			segment->GetPartialSegments().empty() == false)
 		{
 			// The hinted partial opens a new map after a boundary cut; hint the new
 			// initialization section too so clients can fetch it ahead

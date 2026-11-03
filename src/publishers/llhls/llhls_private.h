@@ -5,6 +5,9 @@
 constexpr bool kDefaultHlsLegacy = false;
 constexpr bool kDefaultHlsRewind = true;
 
+// A chunklist keeps the partial segment infos of this many newest segments
+constexpr int64_t kPartialSegmentsRetentionCount = 5;
+
 // How long to wait before asking for a key again after a failed request, so that a
 // source that is failing is not asked once per segment
 constexpr int64_t kKeyRequestRetryIntervalMs = 5000;

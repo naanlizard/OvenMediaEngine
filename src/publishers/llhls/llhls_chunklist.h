@@ -116,7 +116,7 @@ public:
 				return false;
 			}
 
-			if (_partial_segments.empty() == true)
+			if (_partial_segments_count == 0)
 			{
 				// first partial segment
 				_start_time = partial_segment->GetStartTime();
@@ -130,6 +130,7 @@ public:
 			}
 
 			_partial_segments.push_back(partial_segment);
+			_partial_segments_count++;
 
 			if (_completed == true)
 			{
@@ -139,23 +140,31 @@ public:
 			return true;
 		}
 
+		using PartialSegments = std::vector<std::shared_ptr<SegmentInfo>>;
+
 		// Get partial segments
-		const std::deque<std::shared_ptr<SegmentInfo>> &GetPartialSegments() const
+		const PartialSegments &GetPartialSegments() const
 		{
 			return _partial_segments;
 		}
 
-		// Get Partial segments count
+		// Number of partial segments inserted, including ones whose infos were cleared
 		uint32_t GetPartialSegmentsCount() const
 		{
-			return _partial_segments.size();
+			return _partial_segments_count;
 		}
 
-		// Clear partial segments
+		// Frees the partial segment infos, keeping their count so the segment stays listed
 		void ClearPartialSegments()
 		{
 			_partial_segments.clear();
 			_partial_segments.shrink_to_fit();
+		}
+
+		// Like ClearPartialSegments, but hands the infos to the caller, who frees them
+		PartialSegments ReleasePartialSegments()
+		{
+			return std::exchange(_partial_segments, {});
 		}
 
 		void SetCompleted()
@@ -339,7 +348,8 @@ public:
 		uint32_t _track_version = 0;
 		ov::String _codecs_parameter;
 
-		std::deque<std::shared_ptr<SegmentInfo>> _partial_segments;
+		PartialSegments _partial_segments;
+		uint32_t _partial_segments_count = 0;
 
 		std::vector<std::shared_ptr<Marker>> _markers;
 
@@ -480,6 +490,10 @@ private:
 	bool _keep_old_segments = false;
 
 	bool _first_segment = true;
+
+	// Newest segment whose partial segment infos were released. Guarded by _segments_guard.
+	int64_t _partial_segments_released_until = -1;
+	void ReleaseOldPartialSegments(int64_t newest_segment_sequence, std::vector<SegmentInfo::PartialSegments> &released);
 
 	std::map<int32_t, std::shared_ptr<LLHlsChunklist>> _renditions;
 	mutable std::shared_mutex _renditions_guard;

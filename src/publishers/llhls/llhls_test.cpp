@@ -774,6 +774,32 @@ TEST(LLHlsChunklist, CompletedSegmentListsItsWholeDuration)
 	}
 }
 
+TEST(LLHlsChunklist, OldSegmentsReleaseTheirPartialSegmentInfos)
+{
+	auto chunklist = CreateChunklist(CreateVideoTrack());
+	for (uint32_t sequence = 0; sequence < 10; sequence++)
+	{
+		AppendSegment(chunklist, sequence, 1, kInitialMapUri);
+	}
+
+	// The partial infos of all but the newest 5 segments are released; their count stays
+	for (uint32_t sequence = 0; sequence < 10; sequence++)
+	{
+		auto segment = chunklist->GetSegmentInfo(sequence);
+		ASSERT_NE(segment, nullptr);
+		EXPECT_EQ(segment->GetPartialSegments().empty(), sequence < 5) << "segment " << sequence;
+		EXPECT_EQ(segment->GetPartialSegmentsCount(), 1u);
+	}
+
+	// Every segment is still listed, with its start time, and the newest ones with their parts
+	auto playlist = DefaultView(chunklist);
+	EXPECT_EQ(CountOccurrences(playlist, "#EXTINF:6.000000,"), 10);
+	EXPECT_EQ(CountOccurrences(playlist, "#EXT-X-PROGRAM-DATE-TIME:"), 10);
+	EXPECT_EQ(CountOccurrences(playlist, "#EXT-X-PART:"), 3);
+	EXPECT_EQ(chunklist->GetSegmentInfo(0)->GetStartTime(), 0);
+	EXPECT_EQ(chunklist->GetSegmentInfo(1)->GetStartTime(), 6000);
+}
+
 TEST(LLHlsChunklist, GzipDefaultViewIsTheTextUntilTheNextChange)
 {
 	auto chunklist = CreateChunklist(CreateVideoTrack());
