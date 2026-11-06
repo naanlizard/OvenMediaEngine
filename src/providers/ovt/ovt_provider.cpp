@@ -50,13 +50,8 @@ namespace pvd
 
 	std::shared_ptr<ov::SocketPool> OvtProvider::GetClientSocketPool()
 	{
-		if(_client_socket_pool == nullptr)
-		{
-			_client_socket_pool = ov::SocketPool::Create("OvtProvider", ov::SocketType::Tcp, false);
-			_client_socket_pool->Initialize(_worker_count);
-		}
-
-		return _client_socket_pool;
+		// The first pulls of several streams can arrive together
+		return ov::SocketPool::GetPool(_client_socket_pool, _client_socket_pool_once, "OvtProvider", ov::SocketType::Tcp, _worker_count);
 	}
 
 	bool OvtProvider::OnCreateHost(const info::Host &host_info)

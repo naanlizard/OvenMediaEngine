@@ -32,16 +32,16 @@ namespace ov
 			return std::make_shared<SocketPool>(PrivateToken{nullptr}, name, type, thread_per_socket);
 		}
 
-		static std::shared_ptr<SocketPool> GetPool(std::shared_ptr<SocketPool> &pool, std::once_flag &once_flag, const char *name, SocketType type)
+		static std::shared_ptr<SocketPool> GetPool(std::shared_ptr<SocketPool> &pool, std::once_flag &once_flag, const char *name, SocketType type, int worker_count = 1)
 		{
 			try
 			{
 				std::call_once(
 					once_flag,
-					[name, type, &pool]() {
+					[name, type, worker_count, &pool]() {
 						auto new_pool = Create(name, type, false);
 
-						if ((new_pool != nullptr) && new_pool->Initialize(1))
+						if ((new_pool != nullptr) && new_pool->Initialize(worker_count))
 						{
 							pool = std::move(new_pool);
 							return;

@@ -10,6 +10,8 @@
 #include <base/provider/pull_provider/provider.h>
 #include <orchestrator/orchestrator.h>
 
+#include <mutex>
+
 /*
  * OvtProvider
  * 		: Create PhysicalPort, OvtApplication
@@ -60,6 +62,7 @@ namespace pvd
 		bool OnDeleteProviderApplication(const std::shared_ptr<pvd::Application> &application) override;
 
 		std::shared_ptr<ov::SocketPool> _client_socket_pool = nullptr;
+		std::once_flag _client_socket_pool_once;
 		int _worker_count = 1;
 	};
 }  // namespace pvd
