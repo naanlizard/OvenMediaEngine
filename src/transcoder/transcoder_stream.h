@@ -191,6 +191,7 @@ private:
 	bool CreateDecoders() OV_REQUIRES(_pipeline_mutex);
 	bool CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<info::Stream> input_stream, std::shared_ptr<MediaTrack> input_track);
 	std::shared_ptr<TranscodeDecoder> GetDecoder(MediaTrackId decoder_id);
+	std::vector<KeyframeSelector::ImageOutput> GetImageOutputs(MediaTrackId decoder_id);
 	void SetDecoder(MediaTrackId decoder_id, std::shared_ptr<TranscodeDecoder> decoder);
 	void RemoveDecoders() OV_REQUIRES(_pipeline_mutex);
 

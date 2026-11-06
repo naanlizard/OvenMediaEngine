@@ -145,6 +145,7 @@ std::shared_ptr<std::vector<std::shared_ptr<info::CodecCandidate>>> TranscodeDec
 		decoder->SetDeviceID(candidate->GetDeviceId());                           \
 		decoder->SetDecoderId(decoder_id);                                        \
 		decoder->SetCompleteHandler(complete_handler);                            \
+		decoder->SetImageOutputs(image_outputs);                                  \
 		track->SetCodecModuleId(decoder->GetModuleID());                          \
 		track->SetCodecDeviceId(decoder->GetDeviceID());                          \
 		if (decoder->Configure(track) == true)                                    \
@@ -168,7 +169,8 @@ std::shared_ptr<TranscodeDecoder> TranscodeDecoder::Create(
 	std::shared_ptr<info::Stream> info,
 	std::shared_ptr<MediaTrack> track,
 	std::shared_ptr<std::vector<std::shared_ptr<info::CodecCandidate>>> candidates,
-	CompleteHandler complete_handler)
+	CompleteHandler complete_handler,
+	std::vector<KeyframeSelector::ImageOutput> image_outputs)
 {
 	std::shared_ptr<TranscodeDecoder> decoder = nullptr;
 	for (auto &candidate : *candidates)
@@ -237,6 +239,16 @@ cmn::Timebase TranscodeDecoder::GetTimebase()
 void TranscodeDecoder::SetDecoderId(int32_t decoder_id)
 {
 	_decoder_id = decoder_id;
+}
+
+void TranscodeDecoder::SetImageOutputs(std::vector<KeyframeSelector::ImageOutput> outputs)
+{
+	_image_outputs = std::move(outputs);
+}
+
+const std::vector<KeyframeSelector::ImageOutput> &TranscodeDecoder::GetImageOutputs() const
+{
+	return _image_outputs;
 }
 
 bool TranscodeDecoder::Configure(std::shared_ptr<MediaTrack> track)

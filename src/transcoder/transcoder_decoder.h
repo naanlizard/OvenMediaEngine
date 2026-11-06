@@ -13,6 +13,7 @@
 #include "base/info/stream.h"
 #include "base/info/codec.h"
 #include "codec/codec_base.h"
+#include "codec/decoder/keyframe_selector.h"
 
 struct DecodeResult
 {
@@ -60,13 +61,19 @@ public:
 		std::shared_ptr<info::Stream> info,
 		std::shared_ptr<MediaTrack> track,
 		std::shared_ptr<std::vector<std::shared_ptr<info::CodecCandidate>>> candidates,
-		CompleteHandler complete_handler);
+		CompleteHandler complete_handler,
+		std::vector<KeyframeSelector::ImageOutput> image_outputs = {});
 
 	TranscodeDecoder(info::Stream stream_info);
 	~TranscodeDecoder() override;
 
 	bool Configure(std::shared_ptr<MediaTrack> track) override;
 	void SetDecoderId(int32_t decoder_id);
+
+	// Keyframe-only decoding: the image outputs this decoder feeds, if it may skip keyframes
+	// none of them uses. Set before Configure().
+	void SetImageOutputs(std::vector<KeyframeSelector::ImageOutput> outputs);
+	const std::vector<KeyframeSelector::ImageOutput> &GetImageOutputs() const;
 
 	std::shared_ptr<MediaTrack> &GetRefTrack();
 	cmn::Timebase GetTimebase();
@@ -95,12 +102,17 @@ protected:
 	// Upper bound when draining a codec; enough for any reorder depth or hardware surface pool.
 	static constexpr int kMaxDrainFrames = 64;
 
+	// Hands out the frames the codec delays, as at the end of the stream.
+	void FlushCodec();
+
 	virtual std::shared_ptr<MediaPacket> GetFramedPacket() { return nullptr; }
 	virtual DecodeResult SendPacket(const std::shared_ptr<MediaPacket> &packet) { (void)packet; return DecodeResult::NoOutput(); }
 	virtual DecodeResult ReceiveFrame() { return DecodeResult::NoOutput(); }
 	virtual void Uninitialize() {}
 
 	int32_t _decoder_id = -1;
+
+	std::vector<KeyframeSelector::ImageOutput> _image_outputs;
 
 	info::Stream _stream_info;
 	std::shared_ptr<MediaTrack> _track;
@@ -126,6 +138,4 @@ private:
 
 	// Blocks only the stream's own thread.
 	static constexpr uint32_t kDrainTimeoutMs = 1000;
-
-	void FlushCodec();
 };

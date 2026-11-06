@@ -8,8 +8,36 @@
 //==============================================================================
 #include "decoder_avcodec_video.h"
 
+#include <modules/bitstream/h264/h264_decoder_configuration_record.h>
+#include <modules/bitstream/h264/h264_parser.h>
+#include <modules/bitstream/vp8/vp8_parser.h>
+
+#include "../../transcoder_filter.h"
 #include "../../transcoder_private.h"
 #include "base/info/application.h"
+
+// Both fields of an interlaced H.264 picture may come in separate packets, and a selected keyframe is
+// decoded on its own. The avcC lists the SPS of the stream; none, or one that cannot be read, counts as interlaced.
+static bool IsProgressiveAvc(const std::shared_ptr<MediaTrack> &track)
+{
+	auto avcc = track->GetDecoderConfigurationRecordAs<AVCDecoderConfigurationRecord>();
+	if ((avcc == nullptr) || (avcc->NumOfSPS() == 0))
+	{
+		return false;
+	}
+
+	for (int i = 0; i < avcc->NumOfSPS(); i++)
+	{
+		auto data = avcc->GetSPSData(i);
+		H264SPS sps;
+		if ((data == nullptr) || (H264Parser::ParseSPS(data->GetDataAs<uint8_t>(), data->GetLength(), sps) == false) || (sps.IsFrameMbsOnly() == false))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
 
 bool AVCodecVideoDecoder::Initialize()
 {
@@ -77,6 +105,14 @@ bool AVCodecVideoDecoder::Initialize()
 	}
 
 	_change_format = false;
+
+	// A new session has no picture to stand in for a held keyframe yet
+	_last_picture = nullptr;
+
+	bool selectable = GetRefTrack()->IsKeyframeDecodeOnly() && KeyframeSelector::IsSupportedCodec(GetCodecID()) &&
+					  ((GetCodecID() != cmn::MediaCodecId::H264) || IsProgressiveAvc(GetRefTrack()));
+	_keyframe_selector.Configure(GetTimebase(), selectable ? GetImageOutputs() : std::vector<KeyframeSelector::ImageOutput>{},
+								 static_cast<int64_t>(GetTimebase().GetTimescale()) * TranscodeFilter::kTimestampJumpLimitSeconds);
 
 	return true;
 }
@@ -162,6 +198,16 @@ DecodeResult AVCodecVideoDecoder::SendPacket(const std::shared_ptr<MediaPacket> 
 		return DecodeResult::NoOutput();
 	}
 
+	if (_keyframe_selector.IsEnabled() == true)
+	{
+		return SelectKeyframe(packet);
+	}
+
+	return SendToCodec(packet);
+}
+
+DecodeResult AVCodecVideoDecoder::SendToCodec(const std::shared_ptr<MediaPacket> &packet)
+{
 	auto result = _codec.SendPacket(packet);
 	if (result == ffmpeg::CodecResult::InvalidData)
 	{
@@ -224,7 +270,67 @@ DecodeResult AVCodecVideoDecoder::ReceiveFrame()
 		decoded_frame->SetDuration((int64_t)((1.0 / framerate.GetExpr()) / timebase_expr));
 	}
 
+	if (_keyframe_selector.IsEnabled() == true)
+	{
+		_last_picture = decoded_frame;
+	}
+
 	return DecodeResult::Decoded(std::move(decoded_frame), format_changed);
+}
+
+DecodeResult AVCodecVideoDecoder::SelectKeyframe(const std::shared_ptr<MediaPacket> &keyframe)
+{
+	// A hidden VP8 key frame reaches no filter, so the keyframes the selector counts are not the ones the filters see
+	if (GetCodecID() == cmn::MediaCodecId::Vp8)
+	{
+		const auto &data = keyframe->GetData();
+		VP8Parser parser;
+		if ((VP8Parser::Parse(data->GetDataAs<uint8_t>(), data->GetLength(), parser) == false) || (parser._show_frame == 0))
+		{
+			if (auto held = _keyframe_selector.Disable(); held != nullptr)
+			{
+				DecodeKeyframe(held);
+			}
+
+			return SendToCodec(keyframe);
+		}
+	}
+
+	auto decision = _keyframe_selector.OnKeyframe(keyframe, _last_picture != nullptr);
+	if (decision.decode_first != nullptr)
+	{
+		auto previous_picture = _last_picture;
+		DecodeKeyframe(decision.decode_first);
+		_keyframe_selector.OnHeldKeyframeDecoded(_last_picture != previous_picture);
+	}
+
+	if (decision.hold == true)
+	{
+		// The FPS filters of the image outputs advance on it as on the decoded keyframe
+		auto stand_in = _last_picture->CloneFrame();
+		stand_in->SetPts(keyframe->GetPts());
+
+		return DecodeResult::Decoded(std::move(stand_in), false);
+	}
+
+	DecodeKeyframe(keyframe);
+
+	return DecodeResult::NoOutput();
+}
+
+// A keyframe decoded after later ones were held has to reach the filters before the next stand-in,
+// so it is not left to the codec's output delay (frame threads, reordering)
+void AVCodecVideoDecoder::DecodeKeyframe(const std::shared_ptr<MediaPacket> &keyframe)
+{
+	auto sent = SendToCodec(keyframe);
+	if (sent.result != TranscodeResult::Again)
+	{
+		Complete(sent.result, std::move(sent.frame));
+		return;
+	}
+
+	FlushCodec();
+	_codec.Flush();
 }
 
 bool AVCodecVideoDecoder::SendEOS()

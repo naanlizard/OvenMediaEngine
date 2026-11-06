@@ -11,7 +11,6 @@
 
 using namespace cmn;
 
-#define PTS_INCREMENT_LIMIT 15
 #define MAX_QUEUE_SIZE 2
 #define ENABLE_QUEUE_EXCEED_WAIT true
 
@@ -67,7 +66,7 @@ bool TranscodeFilter::Configure(int32_t id,
 	// The completion handler must be set before the worker thread starts producing frames.
 	SetCompleteHandler(complete_handler);
 
-	_timestamp_jump_threshold = (int64_t)GetInputTrack()->GetTimeBase().GetTimescale() * PTS_INCREMENT_LIMIT;
+	_timestamp_jump_threshold = (int64_t)GetInputTrack()->GetTimeBase().GetTimescale() * kTimestampJumpLimitSeconds;
 
 	// Initialize the input buffer queue.
 	auto name = ov::String::FormatString("filter_%s", cmn::GetMediaTypeString(GetInputTrack()->GetMediaType()));
@@ -568,6 +567,11 @@ void TranscodeFilter::OnComplete(TranscodeResult result, std::shared_ptr<MediaFr
 	{
 		frame->SetCodecModuleId(GetOutputTrack()->GetCodecModuleId());
 		frame->SetCodecDeviceId(GetOutputTrack()->GetCodecDeviceId());
+	}
+
+	if ((result == TranscodeResult::DataReady) && (frame != nullptr))
+	{
+		_output_frame_count.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	if (_complete_handler)

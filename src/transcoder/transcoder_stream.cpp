@@ -1180,7 +1180,8 @@ bool TranscoderStream::CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<in
 		input_stream,
 		input_track,
 		candidates,
-		bind(&TranscoderStream::OnDecodedFrame, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+		bind(&TranscoderStream::OnDecodedFrame, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+		input_track->IsKeyframeDecodeOnly() ? GetImageOutputs(decoder_id) : std::vector<KeyframeSelector::ImageOutput>{});
 	if (decoder == nullptr)
 	{
 		return false;
@@ -1197,6 +1198,35 @@ bool TranscoderStream::CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<in
 #endif	// OME_LATENCY_PROBE
 
 	return true;
+}
+
+// The outputs a decoder feeds, for keyframe selection (KeyframeSelector). None unless every output has a set
+// frame rate and no SkipFrames, and no filter exists yet: it is built from this decoder's frames and timebase.
+std::vector<KeyframeSelector::ImageOutput> TranscoderStream::GetImageOutputs(MediaTrackId decoder_id)
+{
+	std::vector<KeyframeSelector::ImageOutput> outputs;
+
+	for (auto &entry : _composite.GetFilterListByDecoderId(decoder_id))
+	{
+		auto &output_track = std::get<3>(entry);
+		auto filter_id	   = std::get<4>(entry);
+
+		if ((GetFilter(filter_id) != nullptr) ||
+			(output_track->GetFrameRateByConfig() <= 0.0) ||
+			(output_track->GetSkipFramesByConfig() >= 0))
+		{
+			return {};
+		}
+
+		// InitializeFpsFilter narrows the configured rate to float before computing slots.
+		outputs.push_back({static_cast<float>(output_track->GetFrameRate()),
+						   [this, filter_id]() -> uint64_t {
+							   auto filter = GetFilter(filter_id);
+							   return (filter != nullptr) ? filter->GetOutputFrameCount() : 0;
+						   }});
+	}
+
+	return outputs;
 }
 
 std::shared_ptr<TranscodeDecoder> TranscoderStream::GetDecoder(MediaTrackId decoder_id)

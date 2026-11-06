@@ -26,6 +26,9 @@ public:
 		CompleteHandler complete_handler);
 
 public:
+	// A timestamp step larger than this between two input frames rebuilds the filter
+	static constexpr int32_t kTimestampJumpLimitSeconds = 15;
+
 	TranscodeFilter();
 	~TranscodeFilter();
 
@@ -47,6 +50,12 @@ public:
 	void OnComplete(TranscodeResult result, std::shared_ptr<MediaFrame> frame);
 
 	ov::String GetDescription() const;
+
+	// Frames handed on so far
+	uint64_t GetOutputFrameCount() const
+	{
+		return _output_frame_count.load(std::memory_order_relaxed);
+	}
 
 private:
 	bool Initialize();
@@ -81,6 +90,7 @@ private:
 
 	std::atomic<bool> _setup_pending{false};
 	std::atomic<bool> _failure_reported{false};
+	std::atomic<uint64_t> _output_frame_count{0};
 
 	mutable ov::SharedMutex _mutex;
 	std::shared_ptr<FilterBase> _filter_base OV_GUARDED_BY(_mutex);

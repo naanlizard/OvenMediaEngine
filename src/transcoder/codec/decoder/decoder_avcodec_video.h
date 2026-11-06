@@ -12,6 +12,8 @@
 #include <modules/ffmpeg/ffmpeg_codec.h>
 #include <transcoder/analyzer/bitstream_analyzer.h>
 
+#include "keyframe_selector.h"
+
 // Software (FFmpeg/libavcodec) video decoder (H264/H265/VP8). Selected for the DEFAULT module.
 class AVCodecVideoDecoder : public TranscodeDecoder
 {
@@ -46,10 +48,19 @@ private:
 
 	// ----- Internal helpers -----
 	bool ReinitCodecIfNeed();
+	DecodeResult SendToCodec(const std::shared_ptr<MediaPacket> &packet);
+
+	// Keyframe-only decoding with KeyframeSelector
+	DecodeResult SelectKeyframe(const std::shared_ptr<MediaPacket> &keyframe);
+	void DecodeKeyframe(const std::shared_ptr<MediaPacket> &keyframe);
 
 	// ----- Members -----
 	cmn::MediaCodecId _codec_id;
 	ffmpeg::FFmpegCodec _codec;
 	BitstreamAnalyzer _analyzer;
 	bool _change_format = false;
+
+	KeyframeSelector _keyframe_selector;
+	// The last picture decoded in this codec session
+	std::shared_ptr<MediaFrame> _last_picture;
 };
