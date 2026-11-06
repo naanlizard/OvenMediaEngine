@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <list>
+#include <mutex>
 #include <optional>
 
 #include <modules/access_control/access_controller.h>
@@ -115,6 +116,8 @@ private:
 	bool AddPendingRequest(const std::shared_ptr<http::svr::HttpExchange> &exchange, const RequestType &type, const ov::String &file_name, const int32_t &track_id, const int64_t &segment_number, const int64_t &partial_number, const bool &skip, const bool &legacy, const bool &rewind);
 
 	std::list<PendingRequest> _pending_requests;
+	// Request threads add while the stream's media thread walks the list when StreamWorkerCount is 0
+	std::mutex _pending_requests_lock;
 
 	// ID list of connections requesting this session
 	// Connection ID : last request time

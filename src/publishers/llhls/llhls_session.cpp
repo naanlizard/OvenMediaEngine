@@ -108,7 +108,10 @@ bool LLHlsSession::Start()
 
 bool LLHlsSession::Stop()
 {
-	logtt("LLHlsSession(%u) : Pending request size(%zu)", GetId(), _pending_requests.size());
+	{
+		std::lock_guard<std::mutex> lock(_pending_requests_lock);
+		logtt("LLHlsSession(%u) : Pending request size(%zu)", GetId(), _pending_requests.size());
+	}
 
 	return Session::Stop();
 }
@@ -934,10 +937,15 @@ void LLHlsSession::ResponseData(const std::shared_ptr<http::svr::HttpExchange> &
 void LLHlsSession::OnPlaylistUpdated(const int32_t &track_id, const int64_t &msn, const int64_t &part)
 {
 	logtt("LLHlsSession::OnPlaylistUpdated track_id: %d, msn: %" PRId64 ", part: %" PRId64 "", track_id, msn, part);
-	// Find the pending request
+	// Answered without the lock; requests parked meanwhile wait for the next update
+	std::list<PendingRequest> pending;
+	{
+		std::lock_guard<std::mutex> lock(_pending_requests_lock);
+		pending.swap(_pending_requests);
+	}
 
-	auto it = _pending_requests.begin();
-	while (it != _pending_requests.end())
+	auto it = pending.begin();
+	while (it != pending.end())
 	{
 		if ( (it->type == RequestType::Playlist) &&
 			 ((it->segment_number < msn) || (it->segment_number <= msn && it->partial_number <= part)) )
@@ -945,7 +953,7 @@ void LLHlsSession::OnPlaylistUpdated(const int32_t &track_id, const int64_t &msn
 			// Send the playlist
 			auto exchange = it->exchange;
 			ResponsePlaylist(exchange, it->file_name, it->legacy, it->rewind, false);
-			it = _pending_requests.erase(it);
+			it = pending.erase(it);
 		}
 		else if ( (it->track_id == track_id) && 
 			 ((it->segment_number < msn) || (it->segment_number <= msn && it->partial_number <= part)) )
@@ -973,13 +981,20 @@ void LLHlsSession::OnPlaylistUpdated(const int32_t &track_id, const int64_t &msn
 			}
 
 			// Remove the request
-			it = _pending_requests.erase(it);
+			it = pending.erase(it);
 		}
 		else
 		{
 			// Next
 			++it;
 		}
+	}
+
+	if (pending.empty() == false)
+	{
+		// Ahead of any request parked during the walk, so the list stays in arrival order
+		std::lock_guard<std::mutex> lock(_pending_requests_lock);
+		_pending_requests.splice(_pending_requests.begin(), pending);
 	}
 }
 
@@ -998,15 +1013,20 @@ bool LLHlsSession::AddPendingRequest(const std::shared_ptr<http::svr::HttpExchan
 	request.exchange = exchange;
 
 	// Add the request to the pending list
-	_pending_requests.push_back(request);
+	size_t pending_count = 0;
+	{
+		std::lock_guard<std::mutex> lock(_pending_requests_lock);
+		_pending_requests.push_back(std::move(request));
+		pending_count = _pending_requests.size();
+	}
 
-	if (_pending_requests.size() > MAX_PENDING_REQUESTS)
+	if (pending_count > MAX_PENDING_REQUESTS)
 	{
 		logtt("[%s/%s/%u] Too many pending requests (%zu)", 
 				GetApplication()->GetVHostAppName().CStr(),
 				GetStream()->GetName().CStr(),
 				GetId(),
-				_pending_requests.size());
+				pending_count);
 	}
 
 	return true;
