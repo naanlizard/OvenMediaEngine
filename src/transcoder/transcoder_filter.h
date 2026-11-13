@@ -25,6 +25,8 @@ public:
 		const std::shared_ptr<info::Stream> &output_tsream_info, std::shared_ptr<MediaTrack> output_track,
 		CompleteHandler complete_handler);
 
+	static bool IsFormatChanged(const std::shared_ptr<FilterBase> &base, const std::shared_ptr<MediaFrame> &frame);
+
 public:
 	TranscodeFilter();
 	~TranscodeFilter();
@@ -57,7 +59,6 @@ private:
 
 	bool IsReadyToProcess();
 	bool IsNeedUpdate(std::shared_ptr<MediaFrame> buffer);
-	bool IsFormatChanged(const std::shared_ptr<FilterBase> &base, const std::shared_ptr<MediaFrame> &frame) const;
 	void UpdateInputTrackByFrame(const std::shared_ptr<FilterBase> &base, const std::shared_ptr<MediaFrame> &frame);
 
 	int32_t _id;

@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <queue>
+#include <set>
 #include <vector>
 
 #include "base/info/application.h"
@@ -27,6 +28,7 @@
 #include "transcoder_fade.h"
 #include "transcoder_overlays.h"
 #include "transcoder_alert.h"
+#include "transcoder_thumbnailer.h"
 
 class TranscodeApplication;
 
@@ -155,6 +157,13 @@ private:
 	// Current version per input track (accessed only on the stream thread)
 	std::map<MediaTrackId, std::shared_ptr<const MediaTrack>> _last_input_tracks;
 
+	// [DECODER_ID, THUMBNAILER]
+	std::map<MediaTrackId, std::shared_ptr<TranscodeThumbnailer>> _thumbnailers;
+	// Tracks a thumbnailer handed back; they stay on the pipeline (accessed only on the stream thread)
+	std::set<MediaTrackId> _thumbnailer_refused;
+	// Of those, the ones whose pipeline decoder has not been given a packet yet
+	std::set<MediaTrackId> _waiting_for_pipeline_start;
+
 	// Last decoded frame and timestamp
 	// [DECODER_ID, MediaFrame]
 	std::map<MediaTrackId, std::shared_ptr<MediaFrame>> _last_decoded_frames OV_GUARDED_BY(_last_decoded_frame_mutex);
@@ -198,6 +207,8 @@ private:
 	// The decoder is replaced; filter/encoders handle it at their own consumption position.
 	void HandleInputConfigChange(const std::shared_ptr<MediaPacket> &packet);
 	void RecreateDecoder(MediaTrackId track_id, const std::shared_ptr<const MediaTrack> &packet_track);
+	void HandBackFromThumbnailer(MediaTrackId decoder_id, MediaTrackId track_id);
+	void RemoveFiltersAndEncodersOfDecoder(MediaTrackId decoder_id);
 
 
 	bool CreateFilters(std::shared_ptr<MediaFrame> buffer);
@@ -222,6 +233,7 @@ private:
 	void BypassPacket(const std::shared_ptr<MediaPacket> &packet);	
 	void DecodePacket(const std::shared_ptr<MediaPacket> &packet);
 	void OnDecodedFrame(TranscodeResult result, MediaTrackId decoder_id, std::shared_ptr<MediaFrame> decoded_frame);
+	void OnThumbnailFrame(TranscodeResult result, MediaTrackId decoder_id, std::shared_ptr<MediaFrame> decoded_frame);
 	void SetLastDecodedFrame(MediaTrackId decoder_id, std::shared_ptr<MediaFrame> &decoded_frame);
 	std::shared_ptr<MediaFrame> GetLastDecodedFrame(MediaTrackId decoder_id);
 	void RemoveLastDecodedFrame();

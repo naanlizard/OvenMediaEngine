@@ -389,6 +389,8 @@ void TranscoderStream::RemoveDecoders()
 			object.reset();
 		}
 	}
+
+	_thumbnailers.clear();
 }
 
 void TranscoderStream::RemoveFilters()
@@ -1156,6 +1158,23 @@ bool TranscoderStream::CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<in
 	// Set the thread count for the decoder.
 	input_track->SetThreadCount(GetOutputProfilesCfg()->GetDecodes().GetThreadCount());
 
+	auto outputs = _composite.GetFilterListByDecoderId(decoder_id);
+	if ((_thumbnailer_refused.count(decoder_id) == 0) && (TranscodeThumbnailer::IsSupported(input_track, outputs) == true))
+	{
+		auto thumbnailer = TranscodeThumbnailer::Create(
+			decoder_id, input_track, std::move(outputs),
+			bind(&TranscoderStream::OnThumbnailFrame, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+			bind(&TranscoderStream::OnFilteredFrame, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+		if (thumbnailer == nullptr)
+		{
+			return false;
+		}
+
+		_thumbnailers[decoder_id] = std::move(thumbnailer);
+
+		return true;
+	}
+
 	auto hwaccels_enable  = GetOutputProfilesCfg()->GetHWAccels().GetDecoder().IsEnable() ||
 							GetOutputProfilesCfg()->IsHardwareAcceleration();  // Deprecated
 
@@ -1719,6 +1738,9 @@ void TranscoderStream::RecreateDecoder(MediaTrackId track_id, const std::shared_
 		old_decoder.reset();
 	}
 
+	bool had_thumbnailer = _thumbnailers.erase(decoder_id.value()) > 0;
+	_waiting_for_pipeline_start.erase(decoder_id.value());
+
 	// After the drain, which still reads the old description. No pipeline lock: no decoder runs for
 	// this track here, MediaTrack locks itself, and the shared-lock callbacks would drop frames.
 	input_track->Update(*packet_track);
@@ -1742,9 +1764,75 @@ void TranscoderStream::RecreateDecoder(MediaTrackId track_id, const std::shared_
 		return;
 	}
 
+	if (had_thumbnailer || (_thumbnailers.count(decoder_id.value()) > 0))
+	{
+		RemoveFiltersAndEncodersOfDecoder(decoder_id.value());
+	}
+
 	logtd("%s Decoder has been recreated for the changed source. Id(%d)<Codec(%s), Module(%s), Device(%u)>, InputTrack(%d)",
 		  _log_prefix.CStr(), decoder_id.value(), cmn::GetCodecIdString(input_track->GetCodecId()),
 		  cmn::GetCodecModuleIdString(input_track->GetCodecModuleId()), input_track->GetCodecDeviceId(), track_id);
+}
+
+void TranscoderStream::RemoveFiltersAndEncodersOfDecoder(MediaTrackId decoder_id)
+{
+	// An image encoder stops at a frame that is not later than its last one. A thumbnailer and the pipeline
+	// stamp and start apart, and a filter of the pipeline that stayed could still give a frame of its own.
+	for (auto &filter_id : _composite.GetFilterIdsByDecoderId(decoder_id))
+	{
+		ov::ReleasableLockGuard filter_lock(_filter_map_mutex);
+		auto filter = _filters.extract(filter_id);
+		filter_lock.Release();
+
+		if ((filter.empty() == false) && (filter.mapped() != nullptr))
+		{
+			filter.mapped()->Stop();
+		}
+	}
+
+	for (auto &[output_stream, output_track, encoder_id] : _composite.GetEncoderListByDecoderId(decoder_id))
+	{
+		ov::ReleasableLockGuard encoder_lock(_encoder_map_mutex);
+		auto encoder = _encoders.extract(encoder_id);
+		encoder_lock.Release();
+
+		if ((encoder.empty() == false) && (encoder.mapped().second != nullptr))
+		{
+			encoder.mapped().second->Stop();
+		}
+	}
+}
+
+// No pipeline lock, as in RecreateDecoder(): no decoder runs for this track here
+void TranscoderStream::HandBackFromThumbnailer(MediaTrackId decoder_id, MediaTrackId track_id)
+{
+	logti("%s Key packets of input track(%u) are not all intra coded. Its thumbnails are decoded by the pipeline from the next IDR picture or recovery point on",
+		  _log_prefix.CStr(), track_id);
+
+	_thumbnailers.erase(decoder_id);
+	_thumbnailer_refused.insert(decoder_id);
+	_waiting_for_pipeline_start.insert(decoder_id);
+	RemoveFiltersAndEncodersOfDecoder(decoder_id);
+
+	auto input_track = _input_stream->GetMutableTrack(track_id);
+	if (CreateDecoder(decoder_id, _input_stream, input_track) == false)
+	{
+		logte("%s Failed to create decoder for the track its thumbnailer handed back. Id(%d)<Codec(%s), Module(%s), Device(%u)>, InputTrack(%d)",
+			  _log_prefix.CStr(), decoder_id, cmn::GetCodecIdString(input_track->GetCodecId()),
+			  cmn::GetCodecModuleIdString(input_track->GetCodecModuleId()), input_track->GetCodecDeviceId(), track_id);
+
+#if NOTIFICATION_ENABLED
+		TranscoderAlerts::UpdateErrorWithoutCount(
+			TranscoderAlerts::ErrorType::CREATION_ERROR_DECODER,
+			nullptr,
+			_input_stream,
+			input_track,
+			nullptr,
+			nullptr);
+#endif
+
+		return;
+	}
 }
 
 void TranscoderStream::BypassPacket(const std::shared_ptr<MediaPacket> &packet)
@@ -1801,6 +1889,30 @@ void TranscoderStream::DecodePacket(const std::shared_ptr<MediaPacket> &packet)
 		return;
 	}
 
+	auto thumbnailer = _thumbnailers.find(decoder_id.value());
+	if (thumbnailer != _thumbnailers.end())
+	{
+		if (thumbnailer->second->SendBuffer(packet) == true)
+		{
+			return;
+		}
+
+		HandBackFromThumbnailer(decoder_id.value(), packet->GetTrackId());
+	}
+
+	// The new pipeline decoder has none of the pictures the thumbnailer decoded; the last image stays until then
+	auto start = packet;
+	if (_waiting_for_pipeline_start.count(decoder_id.value()) > 0)
+	{
+		start = TranscodeThumbnailer::GetPipelineStart(packet, _input_stream->GetTrack(packet->GetTrackId()));
+		if (start == nullptr)
+		{
+			return;
+		}
+
+		_waiting_for_pipeline_start.erase(decoder_id.value());
+	}
+
 	// Shared lock: allows concurrent callbacks but does not block during pipeline updates.
 	if (_pipeline_mutex.TryLockShared() == false)
 	{
@@ -1811,7 +1923,7 @@ void TranscoderStream::DecodePacket(const std::shared_ptr<MediaPacket> &packet)
 	auto decoder = GetDecoder(decoder_id.value());
 	if (decoder)
 	{
-		decoder->SendBuffer(packet);
+		decoder->SendBuffer(start);
 	}
 	else
 	{
@@ -2035,6 +2147,25 @@ void TranscoderStream::OnDecodedFrame(TranscodeResult result, MediaTrackId decod
 			// An error occurred
 			// There is no frame to process
 			break;
+	}
+}
+
+void TranscoderStream::OnThumbnailFrame(TranscodeResult result, MediaTrackId decoder_id, std::shared_ptr<MediaFrame> decoded_frame)
+{
+	if (result == TranscodeResult::DataError)
+	{
+		OnDecodedFrame(result, decoder_id, std::move(decoded_frame));
+	}
+	else if (result == TranscodeResult::FormatChanged)
+	{
+		// As ChangeOutputFormat(), without the filters
+		UpdateInputTrack(decoded_frame);
+		UpdateOutputTrack(decoded_frame);
+
+		if (CreateEncoders(decoded_frame) == false)
+		{
+			SetState(State::ERROR);
+		}
 	}
 }
 

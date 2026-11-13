@@ -450,7 +450,7 @@ bool TranscodeFilter::IsNeedUpdate(std::shared_ptr<MediaFrame> buffer)
 	return false;
 }
 
-bool TranscodeFilter::IsFormatChanged(const std::shared_ptr<FilterBase> &base, const std::shared_ptr<MediaFrame> &frame) const
+bool TranscodeFilter::IsFormatChanged(const std::shared_ptr<FilterBase> &base, const std::shared_ptr<MediaFrame> &frame)
 {
 	// Single track(paired with encoder) does not need to be updated.
 	if (base->IsSingleTrack() == true)
