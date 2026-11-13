@@ -211,6 +211,12 @@ protected:
 
 		while (bits)
 		{
+			// NextPosition() of a subclass may have passed a byte that the check above counted
+			if (_position >= _buffer + _capacity)
+			{
+				return false;
+			}
+
 			const uint8_t bits_from_this_byte = std::min(bits >= 8 ? 8 : bits % 8, 8 - _bit_offset);
 			const uint8_t mask_offset = 8 - bits_from_this_byte - _bit_offset;
 			const uint8_t mask = ((1 << bits_from_this_byte) - 1) << mask_offset;

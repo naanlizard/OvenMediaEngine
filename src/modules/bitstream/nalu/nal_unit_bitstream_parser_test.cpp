@@ -83,6 +83,21 @@ TEST(NalUnitBitstreamParser, KeepsATrailingEmulationPreventionByte)
 	}
 }
 
+// The escape byte counts as data until the read passes it, so a read can begin with enough bits
+// left and run out of them
+TEST(NalUnitBitstreamParser, RejectsAReadThatAnEmulationPreventionByteLeavesShort)
+{
+	// The last byte lies behind the unit
+	const uint8_t nal[] = {0x67, 0x00, 0x00, 0x03, 0x01, 0xFF};
+	NalUnitBitstreamParser parser(nal, sizeof(nal) - 1);
+
+	uint8_t header = 0;
+	ASSERT_TRUE(parser.ReadU8(header));
+
+	uint32_t value = 0;
+	EXPECT_FALSE(parser.ReadU32(value));
+}
+
 // 31 leading zeros put codeNum at 2^31 - 1 + rest, so 0xFFFFFFFE is the largest code that still
 // decodes. It pins the boundary the range check below must not move.
 TEST(NalUnitBitstreamParser, ReadsTheLargestExpGolombCode)
